@@ -1,0 +1,90 @@
+main: com.shampaggon.crackshot.CSDirector
+name: CrackShot
+author: Shampaggon
+version: 0.98.13
+description: Replicate any first-person shooter with advanced gun-mechanics and a vast number of exciting and fully customisable features.
+website: http://dev.bukkit.org/server-mods/crackshot/
+softdepend: [PlaceholderAPI, WorldGuard, WorldEdit]
+
+api-version: 1.13
+
+#commands:
+#  crackshot:
+#    description: Displays general information.
+#    aliases: [cs, cra, shot]
+
+#permissions:
+#  crackshot.*:
+#    description: Grants full access to the plugin.
+#    children:
+#      crackshot.reloadplugin: true
+#      crackshot.list: true
+#      crackshot.give.all: true
+#      crackshot.get.all: true
+#      crackshot.use.all: true
+#      crackshot.craft.all: true
+#      crackshot.buy.all: true
+#      crackshot.shops.all: true
+#      crackshot.bypass.all: true
+#  crackshot.reloadplugin:
+#    description: Permission to reload the plugin.
+#  crackshot.list:
+#    description: Permission to list all weapons.
+#  crackshot.give.all:
+#    description: Permission to give all weapons.
+#  crackshot.get.all:
+#    description: Permission to spawn all weapons.
+#  crackshot.use.all:
+#    description: Permission to use all weapons.
+#    default: true
+#  crackshot.craft.all:
+#    description: Permission to craft all weapons.
+#    default: true
+#  crackshot.buy.all:
+#    description: Permission to purchase all weapons.
+#    default: true
+#  crackshot.shops.all:
+#    description: Permission to create and destroy stores for all weapons.
+#  crackshot.bypass.all:
+#    description: Permission to bypass all region-checks.
+#  csp.*:
+#    description: Grants full access to plugin
+#    children:
+#      csp.reload: true
+#      csp.visualreload.all: true
+#      csp.trail.all: true
+#      csp.use.all: true
+#      csp.attachment.all: true
+#      csp.ammo.all: true
+#      csp.see.killfeed: true
+#      csp.skin.all: true
+#      csp.heldparticle.all: true
+#      csp.itemless.all: true
+#  csp.reload:
+#    description: Permission to reload plugin
+#  csp.visualreload.all:
+#    description: Permission to use other visual reload than default and change it
+#    default: true
+#  csp.trail.all:
+#    description: Permission to use other trail than default and change it
+#    default: true
+#  csp.use.all:
+#    description: Permission to use CrackShotPlus features in all weapons
+#    default: true
+#  csp.attachment.all:
+#    description: Permission to add attachments for weapon
+#    default: true
+#  csp.ammo.all:
+#    description: Permission to remove ammo from weapon
+#    default: true
+#  csp.see.killfeed:
+#    description: Permission to see killfeed
+#    default: true
+#  csp.skin.all:
+#    description: Permission to use skins and change
+#    default: true
+#  csp.heldparticle.all:
+#    description: Permission to use held particles
+#    default: true
+#  csp.itemless.all:
+#    description: Permission to detach, remove ammo and repair weapon using command

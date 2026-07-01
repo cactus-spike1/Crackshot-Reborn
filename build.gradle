@@ -1,0 +1,62 @@
+plugins {
+    id 'java'
+}
+
+group = 'fun.cactus'
+version = '1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_16
+    targetCompatibility = JavaVersion.VERSION_16
+}
+
+repositories {
+    maven {
+        url = 'https://hub.spigotmc.org/nexus/content/groups/public/'
+        content {
+            includeGroup 'org.bukkit'
+            includeGroup 'org.spigotmc'
+        }
+    }
+    maven { url = "https://maven.enginehub.org/repo/" }
+    maven { url = 'https://repo.onarandombox.com/content/groups/public/' }
+    maven { url 'https://repo.extendedclip.com/content/repositories/placeholderapi/' }
+    maven { url 'https://maven.citizensnpcs.co/repo' }
+
+    mavenCentral()
+}
+
+dependencies {
+
+    // локальные библиотеки
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    compileOnly 'me.clip:placeholderapi:2.11.5'
+    compileOnly 'net.citizensnpcs:citizens-main:2.0.30-SNAPSHOT'
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+    compileOnly 'com.sk89q.worldguard:worldguard-bukkit:7.0.4'
+    // Spigot API – только для компиляции, не включается в jar
+//    compileOnly 'org.spigotmc:spigot-api:1.16.5-R0.1-SNAPSHOT'
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.main.output)               // только ваш код и ресурсы
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+
+    manifest {
+        attributes(
+                'Implementation-Title': project.name,
+                'Implementation-Version': version,
+                'Built-By': System.getProperty('user.name')
+        )
+    }
+}
+// ---------------------------
+// Настройки компиляции
+// ---------------------------
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 16
+    options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation'
+}

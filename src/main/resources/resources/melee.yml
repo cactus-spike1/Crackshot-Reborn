@@ -1,0 +1,12 @@
+Riotshield:
+  Item_Information:
+    Item_Name: "&eRiot Shield"
+    Item_Type: IRON_HORSE_ARMOR
+    Item_Lore: "&eBlocks all melee and ranged attacks.|&eIneffective against attacks from behind."
+    Sounds_Acquired: BAT_TAKEOFF-1-1-0
+    Remove_Unused_Tag: true
+  Riot_Shield:
+    Enable: true
+    Durability_Loss_Per_Hit: 10
+    Sounds_Blocked: GLASS-2-2-0
+    Sounds_Break: ITEM_BREAK-2-1-0
