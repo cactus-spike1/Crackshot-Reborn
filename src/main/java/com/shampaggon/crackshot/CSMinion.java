@@ -19,6 +19,10 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import fun.cactus.utils.config.ConfigCache;
+import fun.cactus.utils.ItemUtils;
+import fun.cactus.utils.NameUtils;
+import fun.cactus.utils.commands.CommandUtils;
 import fun.cactus.utils.firework.FireworkData;
 import fun.cactus.utils.firework.FireworkParser;
 import fun.cactus.utils.firework.FireworkService;
@@ -32,21 +36,18 @@ import fun.cactus.utils.potion.PotionEffectService;
 import fun.cactus.utils.region.CuboidRegion;
 import fun.cactus.utils.region.RegionChecker;
 import fun.cactus.utils.region.RegionParser;
+import fun.cactus.utils.sound.SoundUtils;
 import fun.cactus.utils.supereffective.SuperEffectiveData;
 import fun.cactus.utils.supereffective.SuperEffectiveParser;
+import fun.cactus.utils.weapon.WeaponAttachmentUtils;
 import net.md_5.bungee.api.chat.ClickEvent;
 import net.md_5.bungee.api.chat.ComponentBuilder;
 import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
-import org.bukkit.Color;
-import org.bukkit.Effect;
-import org.bukkit.FireworkEffect;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.Server;
 import org.bukkit.World;
-import org.bukkit.FireworkEffect.Type;
 import org.bukkit.block.Block;
 import org.bukkit.block.Skull;
 import org.bukkit.configuration.ConfigurationSection;
@@ -57,7 +58,6 @@ import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.FallingBlock;
-import org.bukkit.entity.Firework;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Minecart;
@@ -68,11 +68,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.Recipe;
 import org.bukkit.inventory.ShapedRecipe;
 import org.bukkit.inventory.ShapelessRecipe;
-import org.bukkit.inventory.meta.FireworkMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.permissions.PermissionAttachment;
-import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
 
 /**
@@ -105,7 +103,7 @@ public class CSMinion {
     public void clearRecipes() {
         try {
             for (String parentNode : this.plugin.parentlist.values()) {
-                if (!this.plugin.getBoolean(parentNode + ".Crafting.Enable")) {
+                if (!ConfigCache.getBoolean(parentNode + ".Crafting.Enable")) {
                     continue;
                 }
 
@@ -120,7 +118,7 @@ public class CSMinion {
 
     public void customRecipes() {
         for (String parentNode : this.plugin.parentlist.values()) {
-            if (this.plugin.getBoolean(parentNode + ".Crafting.Enable")) {
+            if (ConfigCache.getBoolean(parentNode + ".Crafting.Enable")) {
                 this.registerCustomRecipe(parentNode);
             }
         }
@@ -128,7 +126,7 @@ public class CSMinion {
 
     // Собирает ItemStack оружия из конфига, включая имя, CMD и отображаемый боезапас.
     public ItemStack vendingMachine(String parentNode) {
-        String itemInfo = this.plugin.getString(parentNode + ".Item_Information.Item_Type");
+        String itemInfo = ConfigCache.getString(parentNode + ".Item_Information.Item_Type");
         if (itemInfo == null) {
             this.log(" The weapon '" + parentNode + "' has no value provided for Item_Type!");
             return null;
@@ -150,7 +148,7 @@ public class CSMinion {
             meta.setCustomModelData(customModelData);
         }
         meta.setDisplayName(this.buildWeaponDisplayName(parentNode));
-        this.applyLore(meta, this.plugin.getString(parentNode + ".Item_Information.Item_Lore"));
+        this.applyLore(meta, ConfigCache.getString(parentNode + ".Item_Information.Item_Lore"));
         weapon.setItemMeta(meta);
         return weapon;
     }
@@ -185,7 +183,7 @@ public class CSMinion {
     public void getWeaponCommand(Player player, String weapon, boolean spawned, String amount, boolean given, boolean byAPI) {
         String parent_node = this.identifyWeapon(weapon);
         if (parent_node != null) {
-            String attachType = this.plugin.getString(parent_node + ".Item_Information.Attachments.Type");
+            String attachType = ConfigCache.getString(parent_node + ".Item_Information.Attachments.Type");
             if (attachType == null || !attachType.equalsIgnoreCase("accessory")) {
                 this.getWeaponHelper(player, parent_node, spawned, amount, given, byAPI);
                 return;
@@ -239,12 +237,12 @@ public class CSMinion {
                     if (spawned) {
                         player.sendMessage(this.heading + "Successfully grabbed - " + publicName + multiplier);
                     } else if (given && !byAPI) {
-                        String itemName = this.plugin.getString(parentNode + ".Item_Information.Item_Name");
+                        String itemName = ConfigCache.getString(parentNode + ".Item_Information.Item_Name");
                         CSMessages.sendMessage(player, this.heading, Message.WEAPON_RECEIVED.getMessage(itemName, String.valueOf('✕'), intAmount));
                     }
 
                     if (!byAPI) {
-                        this.plugin.playSoundEffects(player, parentNode, ".Item_Information.Sounds_Acquired", false, null);
+                        SoundUtils.playSoundEffects(player, parentNode, ".Item_Information.Sounds_Acquired", false, null);
                     }
 
                 }
@@ -368,8 +366,8 @@ public class CSMinion {
         int counter = 1;
 
         for (String parent_node : this.plugin.parentlist.values()) {
-            String attachType = this.plugin.getString(parent_node + ".Item_Information.Attachments.Type");
-            if (!this.plugin.getBoolean(parent_node + ".Item_Information.Hidden_From_List") && (attachType == null || !attachType.equalsIgnoreCase("accessory"))) {
+            String attachType = ConfigCache.getString(parent_node + ".Item_Information.Attachments.Type");
+            if (!ConfigCache.getBoolean(parent_node + ".Item_Information.Hidden_From_List") && (attachType == null || !attachType.equalsIgnoreCase("accessory"))) {
                 this.plugin.wlist.put(counter, parent_node);
                 ++counter;
             }
@@ -391,9 +389,9 @@ public class CSMinion {
     }
 
     private void registerCustomRecipe(String parentNode) {
-        boolean shaped = this.plugin.getBoolean(parentNode + ".Crafting.Shaped");
-        int quantity = this.plugin.getInt(parentNode + ".Crafting.Quantity");
-        String ingredients = this.plugin.getString(parentNode + ".Crafting.Ingredients");
+        boolean shaped = ConfigCache.getBoolean(parentNode + ".Crafting.Shaped");
+        int quantity = ConfigCache.getInt(parentNode + ".Crafting.Quantity");
+        String ingredients = ConfigCache.getString(parentNode + ".Crafting.Ingredients");
         if (ingredients == null) {
             this.log("The weapon '" + parentNode + "' does not have a value for Crafting.Ingredients.");
             return;
@@ -453,14 +451,14 @@ public class CSMinion {
 
     // Вся логика отображения боезапаса собрана здесь, чтобы править формат имени можно было в одном месте.
     private String buildWeaponDisplayName(String parentNode) {
-        String displayName = this.plugin.getString(parentNode + ".Item_Information.Item_Name");
-        String firearmActionType = this.plugin.getString(parentNode + ".Firearm_Action.Type");
-        boolean dualWield = this.plugin.getBoolean(parentNode + ".Shooting.Dual_Wield");
-        boolean keepUnusedTag = !this.plugin.getBoolean(parentNode + ".Item_Information.Remove_Unused_Tag");
-        boolean explosiveDeviceEnabled = this.plugin.getBoolean(parentNode + ".Explosive_Devices.Enable");
-        String explosiveDeviceType = this.plugin.getString(parentNode + ".Explosive_Devices.Device_Type");
-        String attachmentType = this.plugin.getString(parentNode + ".Item_Information.Attachments.Type");
-        String attachmentInfo = this.plugin.getString(parentNode + ".Item_Information.Attachments.Info");
+        String displayName = ConfigCache.getString(parentNode + ".Item_Information.Item_Name");
+        String firearmActionType = ConfigCache.getString(parentNode + ".Firearm_Action.Type");
+        boolean dualWield = ConfigCache.getBoolean(parentNode + ".Shooting.Dual_Wield");
+        boolean keepUnusedTag = !ConfigCache.getBoolean(parentNode + ".Item_Information.Remove_Unused_Tag");
+        boolean explosiveDeviceEnabled = ConfigCache.getBoolean(parentNode + ".Explosive_Devices.Enable");
+        String explosiveDeviceType = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Type");
+        String attachmentType = ConfigCache.getString(parentNode + ".Item_Information.Attachments.Type");
+        String attachmentInfo = ConfigCache.getString(parentNode + ".Item_Information.Attachments.Info");
         Integer startAmount = this.getStartingReloadAmount(parentNode);
         boolean startGiven = this.hasConfiguredStartingAmount(parentNode, startAmount);
         int reloadAmount = this.resolveDisplayedReloadAmount(parentNode, firearmActionType, startAmount);
@@ -470,7 +468,7 @@ public class CSMinion {
     }
 
     private String buildWeaponAmmoTag(String parentNode, int reloadAmount, boolean dualWield, boolean keepUnusedTag, boolean explosiveDeviceEnabled, String explosiveDeviceType, String firearmActionType, String attachmentType, String attachmentInfo) {
-        if (this.plugin.getBoolean(parentNode + ".Reload.Enable") && !explosiveDeviceEnabled) {
+        if (ConfigCache.getBoolean(parentNode + ".Reload.Enable") && !explosiveDeviceEnabled) {
             if (dualWield) {
                 return this.buildDualAmmoTag(String.valueOf(reloadAmount), String.valueOf(reloadAmount));
             }
@@ -507,7 +505,7 @@ public class CSMinion {
     }
 
     private String buildAttachmentAmmoTag(String attachmentNode, String primaryAmmoDisplay) {
-        boolean attachmentReloadEnabled = this.plugin.getBoolean(attachmentNode + ".Reload.Enable");
+        boolean attachmentReloadEnabled = ConfigCache.getBoolean(attachmentNode + ".Reload.Enable");
         String secondaryAmmoDisplay = attachmentReloadEnabled
                 ? String.valueOf(this.resolveAttachmentReloadAmount(attachmentNode))
                 : String.valueOf(INFINITY_SYMBOL);
@@ -524,7 +522,7 @@ public class CSMinion {
 
     private String resolveExplosiveCapacity(String parentNode, String explosiveDeviceType) {
         String capacity = "N/A";
-        String deviceInfo = this.plugin.getString(parentNode + ".Explosive_Devices.Device_Info");
+        String deviceInfo = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Info");
         String[] refinedOre = "itembomb".equalsIgnoreCase(explosiveDeviceType) && deviceInfo != null
                 ? deviceInfo.split(",")
                 : this.returnRefinedOre(null, parentNode);
@@ -538,7 +536,7 @@ public class CSMinion {
     private int resolveDisplayedReloadAmount(String weaponNode, String firearmActionType, Integer startAmount) {
         // Для bolt/lever отображаемая ёмкость уменьшается на патрон,
         // который условно "уходит в патронник" до следующего цикла.
-        int reloadAmount = this.plugin.getInt(weaponNode + ".Reload.Reload_Amount");
+        int reloadAmount = ConfigCache.getInt(weaponNode + ".Reload.Reload_Amount");
         if (this.hasConfiguredStartingAmount(weaponNode, startAmount)) {
             reloadAmount = Math.max(startAmount, 0);
         }
@@ -551,7 +549,7 @@ public class CSMinion {
     }
 
     private int resolveAttachmentReloadAmount(String attachmentNode) {
-        return this.resolveDisplayedReloadAmount(attachmentNode, this.plugin.getString(attachmentNode + ".Firearm_Action.Type"), this.getStartingReloadAmount(attachmentNode));
+        return this.resolveDisplayedReloadAmount(attachmentNode, ConfigCache.getString(attachmentNode + ".Firearm_Action.Type"), this.getStartingReloadAmount(attachmentNode));
     }
 
     private Integer getStartingReloadAmount(String weaponNode) {
@@ -559,7 +557,7 @@ public class CSMinion {
     }
 
     private boolean hasConfiguredStartingAmount(String weaponNode, Integer startAmount) {
-        return startAmount != null && startAmount <= this.plugin.getInt(weaponNode + ".Reload.Reload_Amount");
+        return startAmount != null && startAmount <= ConfigCache.getInt(weaponNode + ".Reload.Reload_Amount");
     }
 
     private boolean usesReservedChamber(String firearmActionType) {
@@ -668,65 +666,11 @@ public class CSMinion {
         }
     }
 
-//    public void listWeapons(Player sender, String[] args) {
-//        int start = 1;
-//        int page = 1;
-//        int finalChapter = this.plugin.getInt("totalPages");
-//        if (finalChapter == 0) {
-//            finalChapter = 1;
-//        }
-//
-//        if (args.length == 2 && !args[1].equalsIgnoreCase("all")) {
-//            int pageNumber;
-//            try {
-//                pageNumber = Integer.valueOf(args[1]);
-//            } catch (NumberFormatException var10) {
-//                sender.sendMessage(this.heading + "You have provided an invalid page number.");
-//                return;
-//            }
-//
-//            if (pageNumber < 1) {
-//                return;
-//            }
-//
-//            start = 1 + (pageNumber - 1) * 18;
-//            page = pageNumber;
-//            if (start >= finalChapter * 18) {
-//                start = 1 + (finalChapter - 1) * 18;
-//            }
-//
-//            if (pageNumber < 1) {
-//                page = 1;
-//            } else if (pageNumber > finalChapter) {
-//                page = finalChapter;
-//            }
-//        }
-//
-//        int finish = start + 18;
-//        if (args.length == 2 && args[1].equalsIgnoreCase("all")) {
-//            finish = finalChapter * 18;
-//            sender.sendMessage("§7░ §cWeapons [All pages]:");
-//        } else {
-//            sender.sendMessage("§7░ §cWeapons [Page " + page + "/" + finalChapter + "]:");
-//        }
-//
-//        for(int i = start; i < finish; i += 2) {
-//            String weapon = this.plugin.wlist.get(i);
-//            if (weapon == null) {
-//                break;
-//            }
-//
-//            String weapon2 = this.plugin.wlist.get(i + 1);
-//            sender.sendMessage(this.makePretty(weapon, weapon2));
-//        }
-//
-//    }
-
     public void listWeapons(Player sender, String[] args) {
         // Команда строится страницами по 18 элементов, но поддерживает и вывод всех страниц сразу.
         int start = 1;
         int page = 1;
-        int finalChapter = this.plugin.getInt("totalPages");
+        int finalChapter = ConfigCache.getInt("totalPages");
         if (finalChapter == 0) {
             finalChapter = 1;
         }
@@ -857,7 +801,7 @@ public class CSMinion {
     public void replaceBrackets(ItemStack item, String gapFiller, String parent_node) {
         // Метод меняет только содержимое между «» и старается сохранить формат
         // для основного оружия и прикреплённого модуля в одном display name.
-        String attachType = this.plugin.getAttachment(parent_node, item)[0];
+        String attachType = WeaponAttachmentUtils.getAttachment(parent_node, item)[0];
 
         try {
             if (attachType != null) {
@@ -958,32 +902,32 @@ public class CSMinion {
             String shooterName = player == null ? "<shooter>" : player.getName();
             boolean spawnedEnts = this.plugin.spawnEntities(victim, parent_node, ".Spawn_Entity_On_Hit.EntityType_Baby_Explode_Amount", player);
             this.givePotionEffects(victim, parent_node, ".Explosions.Explosion_Potion_Effect", /*"explosion"*/PotionActivation.EXPLOSION);
-            int inc = this.plugin.getInt(parent_node + ".Explosions.Ignite_Victims");
+            int inc = ConfigCache.getInt(parent_node + ".Explosions.Ignite_Victims");
             if (inc != 0) {
                 victim.setFireTicks(inc);
             }
 
-            this.plugin.playSoundEffects(victim, parent_node, ".Explosions.Sounds_Victim", false, (Location) null, new String[0]);
+            SoundUtils.playSoundEffects(victim, parent_node, ".Explosions.Sounds_Victim", false, (Location) null, new String[0]);
             if (victim == player) {
                 return;
             }
 
             if (victim instanceof Player) {
                 if (spawnedEnts) {
-                    this.plugin.sendPlayerMessage(victim, parent_node, ".Spawn_Entity_On_Hit.Message_Victim", shooterName, vicName, "<flight>", "<damage>");
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Spawn_Entity_On_Hit.Message_Victim", shooterName, vicName, "<flight>", "<damage>");
                 }
 
                 vicName = victim.getName();
-                this.plugin.sendPlayerMessage(victim, parent_node, ".Explosions.Message_Victim", shooterName, vicName, "<flight>", "<damage>");
+                CommandUtils.sendPlayerMessage(victim, parent_node, ".Explosions.Message_Victim", shooterName, vicName, "<flight>", "<damage>");
             }
 
             if (player != null) {
                 if (spawnedEnts) {
-                    this.plugin.sendPlayerMessage(player, parent_node, ".Spawn_Entity_On_Hit.Message_Shooter", shooterName, vicName, "<flight>", "<damage>");
+                    CommandUtils.sendPlayerMessage(player, parent_node, ".Spawn_Entity_On_Hit.Message_Shooter", shooterName, vicName, "<flight>", "<damage>");
                 }
 
-                this.plugin.sendPlayerMessage(player, parent_node, ".Explosions.Message_Shooter", shooterName, vicName, "<flight>", "<damage>");
-                this.plugin.playSoundEffects(player, parent_node, ".Explosions.Sounds_Shooter", false, (Location) null, new String[0]);
+                CommandUtils.sendPlayerMessage(player, parent_node, ".Explosions.Message_Shooter", shooterName, vicName, "<flight>", "<damage>");
+                SoundUtils.playSoundEffects(player, parent_node, ".Explosions.Sounds_Shooter", false, (Location) null, new String[0]);
             }
         }
 
@@ -1037,7 +981,7 @@ public class CSMinion {
             for (Entity ent : vehicle.getNearbyEntities((double) 1.0F, (double) 10.0F, (double) 1.0F)) {
                 if (ent instanceof Item && !(ent.getVehicle() instanceof Entity)) {
                     ItemStack itemFuse = ((Item) ent).getItemStack();
-                    if (this.plugin.itemIsSafe(itemFuse) && itemFuse.getItemMeta().getDisplayName().startsWith("§cS3AGULLL~")) {
+                    if (ItemUtils.itemIsSafe(itemFuse) && itemFuse.getItemMeta().getDisplayName().startsWith("§cS3AGULLL~")) {
                         vehicle.setPassenger(ent);
                         break;
                     }
@@ -1049,17 +993,17 @@ public class CSMinion {
 
     public void mineAction(Vehicle vehicle, String[] mineInfo, Player fisherman, boolean shot, String vicName, Entity victim) {
         if (fisherman != null && vicName != null) {
-            this.plugin.sendPlayerMessage(fisherman, mineInfo[2], ".Explosive_Devices.Message_Trigger_Placer", mineInfo[1], vicName, "<flight>", "<damage>");
-            this.plugin.playSoundEffects(fisherman, mineInfo[2], ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
+            CommandUtils.sendPlayerMessage(fisherman, mineInfo[2], ".Explosive_Devices.Message_Trigger_Placer", mineInfo[1], vicName, "<flight>", "<damage>");
+            SoundUtils.playSoundEffects(fisherman, mineInfo[2], ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
         }
 
         if (victim instanceof Player && !mineInfo[1].equals(((Player) victim).getName())) {
-            this.plugin.sendPlayerMessage((Player) victim, mineInfo[2], ".Explosive_Devices.Message_Trigger_Victim", mineInfo[1], vicName, "<flight>", "<damage>");
+            CommandUtils.sendPlayerMessage((Player) victim, mineInfo[2], ".Explosive_Devices.Message_Trigger_Victim", mineInfo[1], vicName, "<flight>", "<damage>");
         }
 
         this.plugin.projectileExplosion(vehicle, mineInfo[2], shot, fisherman, true, false, (Location) null, (Block) null, false, 0);
         if (!shot) {
-            this.plugin.playSoundEffects(vehicle, mineInfo[2], ".Explosive_Devices.Sounds_Trigger", false, (Location) null, new String[0]);
+            SoundUtils.playSoundEffects(vehicle, mineInfo[2], ".Explosive_Devices.Sounds_Trigger", false, (Location) null, new String[0]);
         }
 
         vehicle.getPassenger().remove();
@@ -1078,7 +1022,7 @@ public class CSMinion {
     }
 
     public String[] fastenSeatbelts(Item psngr) {
-        if (this.plugin.itemIsSafe(psngr.getItemStack())) {
+        if (ItemUtils.itemIsSafe(psngr.getItemStack())) {
             String itemName = psngr.getItemStack().getItemMeta().getDisplayName();
             if (itemName.contains("§cS3AGULLL")) {
                 return itemName.split("~");
@@ -1126,7 +1070,7 @@ public class CSMinion {
     }
 
     public String[] returnRefinedOre(Player player, String parent_node) {
-        String rdeOre = this.plugin.getString(parent_node + ".Explosive_Devices.Device_Info");
+        String rdeOre = ConfigCache.getString(parent_node + ".Explosive_Devices.Device_Info");
         boolean playerExists = player != null;
         String msgToSend = null;
         if (rdeOre != null) {
@@ -1163,11 +1107,11 @@ public class CSMinion {
         ItemStack item = this.parseItemStack(itemInfo);
         if (item != null) {
             ItemStack[] inv = player.getInventory().getContents();
-            String ammoName = this.plugin.getString(weaponTitle + ".Ammo.Ammo_Name_Check");
+            String ammoName = ConfigCache.getString(weaponTitle + ".Ammo.Ammo_Name_Check");
             boolean checkName = ammoName != null;
 
             for (int i = 0; removed <= totalAmt && i < inv.length; ++i) {
-                if (inv[i] != null && inv[i].getType() == item.getType() && inv[i].getDurability() == item.getDurability() && (!checkName || this.plugin.itemIsSafe(inv[i]) && inv[i].getItemMeta().getDisplayName().contains(ammoName))) {
+                if (inv[i] != null && inv[i].getType() == item.getType() && inv[i].getDurability() == item.getDurability() && (!checkName || ItemUtils.itemIsSafe(inv[i]) && inv[i].getItemMeta().getDisplayName().contains(ammoName))) {
                     if (inv[i].getAmount() > totalAmt - removed) {
                         inv[i].setAmount(inv[i].getAmount() - (totalAmt - removed));
                         removed = totalAmt;
@@ -1181,7 +1125,7 @@ public class CSMinion {
             player.getInventory().setContents(inv);
             player.updateInventory();
             if (!this.containsItemStack(player, itemInfo, 1, weaponTitle) && !shop) {
-                this.plugin.playSoundEffects(player, weaponTitle, ".Ammo.Sounds_Out_Of_Ammo", false, (Location) null, new String[0]);
+                SoundUtils.playSoundEffects(player, weaponTitle, ".Ammo.Sounds_Out_Of_Ammo", false, (Location) null, new String[0]);
             }
 
         }
@@ -1193,11 +1137,11 @@ public class CSMinion {
         if (item == null) {
             count = 0;
         } else {
-            String ammoName = this.plugin.getString(weaponTitle + ".Ammo.Ammo_Name_Check");
+            String ammoName = ConfigCache.getString(weaponTitle + ".Ammo.Ammo_Name_Check");
             boolean checkName = ammoName != null;
 
             for (ItemStack itemSlot : player.getInventory().getContents()) {
-                if (itemSlot != null && itemSlot.getType() == item.getType() && itemSlot.getDurability() == item.getDurability() && (!checkName || this.plugin.itemIsSafe(itemSlot) && itemSlot.getItemMeta().getDisplayName().contains(ammoName))) {
+                if (itemSlot != null && itemSlot.getType() == item.getType() && itemSlot.getDurability() == item.getDurability() && (!checkName || ItemUtils.itemIsSafe(itemSlot) && itemSlot.getItemMeta().getDisplayName().contains(ammoName))) {
                     count += itemSlot.getAmount();
                 }
             }
@@ -1211,30 +1155,10 @@ public class CSMinion {
         return item != null && this.countItemStacks(player, itemInfo, weaponTitle) >= minAmount;
     }
 
-    /* public double getSuperDamage(EntityType victimType, String parent_node, double totalDmg) {
-         String superEffect = this.plugin.getString(parent_node + ".Abilities.Super_Effective");
-         if (superEffect != null) {
-             String[] mobList = superEffect.split(",");
 
-             for (String mob : mobList) {
-                 mob = mob.replace(" ", "");
-                 String[] args = mob.split("-");
-
-                 try {
-                     if (args.length == 2 && victimType == EntityType.valueOf(args[0])) {
-                         totalDmg = (double) Math.round(totalDmg * Double.valueOf(args[1]));
-                     }
-                 } catch (IllegalArgumentException var13) {
-                     this.plugin.printM("The value provided for the Super_Effective node of the weapon '" + parent_node + "' is incorrect.");
-                 }
-             }
-         }
-
-         return totalDmg;
-     }*/
     public double getSuperDamage(EntityType victimType, String parentNode, double totalDamage) {
 
-        String configValue = plugin.getString(parentNode + ".Abilities.Super_Effective");
+        String configValue = ConfigCache.getString(parentNode + ".Abilities.Super_Effective");
 
         if (configValue == null) return totalDamage;
 
@@ -1259,7 +1183,7 @@ public class CSMinion {
     }
 
     public int getInstantKillChance(EntityType victimType, String parent_node) {
-        String instantKill = this.plugin.getString(parent_node + ".Abilities.Instant_Kill");
+        String instantKill = ConfigCache.getString(parent_node + ".Abilities.Instant_Kill");
         if (instantKill == null) {
             return 0;
         }
@@ -1291,37 +1215,7 @@ public class CSMinion {
         return chance > 0 && new Random().nextInt(100) < chance;
     }
 
- /*   public void displayFireworks(Entity entity, String parentNode, String child_node) {
-        // Firework-эффекты читаются из строки конфига, поэтому здесь много валидации формата.
-        if (this.plugin.getBoolean(parentNode + ".Fireworks.Enable") && this.plugin.getString(parentNode + child_node) != null) {
-            String[] fwList = this.plugin.getString(parentNode + child_node).split(",");
 
-            for (String fwInfo : fwList) {
-                fwInfo = fwInfo.replace(" ", "");
-                String[] args = fwInfo.split("-");
-                if (args.length == 6) {
-                    try {
-                        Firework fireWork;
-                        if (entity instanceof LivingEntity) {
-                            fireWork = entity.getWorld().spawn(((LivingEntity) entity).getEyeLocation(), Firework.class);
-                        } else {
-                            fireWork = entity.getWorld().spawn(entity.getLocation(), Firework.class);
-                        }
-
-                        FireworkMeta fireWorkMeta = fireWork.getFireworkMeta();
-                        FireworkEffect effect = FireworkEffect.builder().trail(Boolean.parseBoolean(args[1])).flicker(Boolean.parseBoolean(args[2])).withColor(Color.fromRGB(Integer.parseInt(args[3]), Integer.parseInt(args[4]), Integer.parseInt(args[5]))).with(Type.valueOf(args[0].toUpperCase())).build();
-                        fireWorkMeta.addEffects(effect);
-                        fireWork.setFireworkMeta(fireWorkMeta);
-                    } catch (IllegalArgumentException var13) {
-                        this.log(fwInfo + "' of weapon '" + parentNode + "' has an incorrect value for firework type, flicker, trail, or colour!");
-                    }
-                } else {
-                    this.log(fwInfo + "' of weapon '" + parentNode + "' has an invalid format! The correct format is: Type-Trail-Flicker-Red-Blue-Green!");
-                }
-            }
-
-        }
-    }*/
 
     public void displayFireworks(
             Entity entity,
@@ -1329,7 +1223,7 @@ public class CSMinion {
             String childNode
     ) {
 
-        if (!plugin.getBoolean(
+        if (!ConfigCache.getBoolean(
                 parentNode +
                         ".Fireworks.Enable"
         )) {
@@ -1337,10 +1231,7 @@ public class CSMinion {
         }
 
         String fireworkString =
-                plugin.getString(
-                        parentNode +
-                                childNode
-                );
+                ConfigCache.getString(parentNode + childNode);
 
         if (fireworkString == null) {
             return;
@@ -1362,53 +1253,11 @@ public class CSMinion {
                 );
 
             } catch (Exception ex) {
-
-                log(
-                        "'" +
-                                rawFirework +
-                                "' of weapon '" +
-                                parentNode +
-                                "' has an invalid firework format!"
-                );
+                log("'" + rawFirework + "' of weapon '" + parentNode + "' has an invalid firework format!");
             }
         }
     }
 
-    /*  public void givePotionEffects(LivingEntity player, String parentNode, String childNode, String event) {
-          if (!event.equals("explosion")) {
-              String eventInfo = this.plugin.getString(parentNode + ".Potion_Effects.Activation");
-              if (eventInfo == null || !eventInfo.toLowerCase().contains(event)) {
-                  return;
-              }
-          }
-
-          if (this.plugin.getString(parentNode + childNode) != null) {
-              String[] effectList = this.plugin.getString(parentNode + childNode).split(",");
-
-              for (String potFX : effectList) {
-                  potFX = potFX.replace(" ", "");
-                  String[] args = potFX.split("-");
-                  if (args.length == 3) {
-                      try {
-                          PotionEffectType potionType = PotionEffectType.getByName(args[0].toUpperCase());
-                          int duration = Integer.parseInt(args[1]);
-                          if (potionType.getDurationModifier() != (double) 1.0F) {
-                              double maths = (double) duration * ((double) 1.0F / potionType.getDurationModifier());
-                              duration = (int) maths;
-                          }
-
-                          player.removePotionEffect(potionType);
-                          player.addPotionEffect(potionType.createEffect(duration, Integer.parseInt(args[2]) - 1));
-                      } catch (Exception e) {
-                          this.log(potFX + "' of weapon '" + parentNode + "' has an incorrect potion type, duration or level!");
-                      }
-                  } else {
-                      this.log(potFX + "' of weapon '" + parentNode + "' has an invalid format! The correct format is: Potion-Duration-Level!");
-                  }
-              }
-
-          }
-      }*/
     public void givePotionEffects(
             LivingEntity entity,
             String parentNode,
@@ -1420,26 +1269,10 @@ public class CSMinion {
             return;
         }
 
-//        if (!"explosion".equals(event)) {
-//
-//            String activation =
-//                    plugin.getString(
-//                            parentNode +
-//                                    ".Potion_Effects.Activation"
-//                    );
-//
-//            if (activation == null
-//                    || !activation.toLowerCase()
-//                    .contains(event.toLowerCase())) {
-//
-//                return;
-//            }
-//        }
+
 
         String potionString =
-                plugin.getString(
-                        parentNode + childNode
-                );
+                ConfigCache.getString(parentNode + childNode);
 
         if (potionString == null) {
             return;
@@ -1461,13 +1294,7 @@ public class CSMinion {
                 );
 
             } catch (Exception ex) {
-
-                log(
-                        "'" + rawPotion +
-                                "' of weapon '" +
-                                parentNode +
-                                "' has an invalid format!"
-                );
+                log("'" + rawPotion + "' of weapon '" + parentNode + "' has an invalid format!");
             }
         }
     }
@@ -1481,11 +1308,7 @@ public class CSMinion {
             return true;
         }
 
-        String configValue =
-                plugin.getString(
-                        parentNode +
-                                ".Potion_Effects.Activation"
-                );
+        String configValue = ConfigCache.getString(parentNode + ".Potion_Effects.Activation");
 
         if (configValue == null) {
             return false;
@@ -1494,61 +1317,10 @@ public class CSMinion {
         return Arrays.stream(configValue.split(","))
                 .map(String::trim)
                 .map(String::toUpperCase)
-                .anyMatch(
-                        value -> value.equals(
-                                activation.name()
-                        )
-                );
+                .anyMatch(value -> value.equals(activation.name()));
     }
 
-    /*  public void giveParticleEffects(Entity player, String parentNode, String childNode, boolean muzzleFlash, Location givenCoord) {
-          // Часть эффектов завязана на старый Bukkit Effect API, поэтому поддерживаются только legacy-форматы.
-          if ((this.plugin.getBoolean(parentNode + ".Particles.Enable") || givenCoord != null) && this.plugin.getString(parentNode + childNode) != null) {
-              Location loc = player != null ? player.getLocation() : givenCoord;
-              World world = loc.getWorld();
-              if (muzzleFlash) {
-                  Location eyeLoc = ((LivingEntity) player).getEyeLocation();
-                  loc = eyeLoc.toVector().add(eyeLoc.getDirection().multiply((double) 1.5F)).toLocation(world);
-              }
 
-              String[] partList = this.plugin.getString(parentNode + childNode).split(",");
-
-              for (String partFX : partList) {
-                  partFX = partFX.replace(" ", "");
-                  String[] args = partFX.split("-");
-                  if (args.length == 1) {
-                      if (args[0].equalsIgnoreCase("smoke")) {
-                          for (int i = 0; i < 8; ++i) {
-                              world.playEffect(loc, Effect.SMOKE, i);
-                          }
-                      } else if (args[0].equalsIgnoreCase("lightning")) {
-                          world.strikeLightningEffect(loc);
-                      } else if (args[0].equalsIgnoreCase("explosion")) {
-                          world.createExplosion(loc, 0.0F);
-                      }
-                  } else if (args.length == 2) {
-                      try {
-                          if (args[0].equalsIgnoreCase("potion_splash")) {
-                              world.playEffect(loc, Effect.POTION_BREAK, Integer.parseInt(args[1]));
-                          } else if (args[0].equalsIgnoreCase("block_break")) {
-                              int blockID = Integer.parseInt(args[1]);
-                              if (blockID < 256) {
-                                  world.playEffect(loc, Effect.STEP_SOUND, blockID);
-                              } else {
-                                  this.plugin.printM("'" + partFX + "' was provided as a particle effect for the weapon '" + parentNode + "'. It contains '" + blockID + "', which is not a valid block ID.");
-                              }
-                          } else if (args[0].equalsIgnoreCase("flames")) {
-                              world.playEffect(loc, Effect.MOBSPAWNER_FLAMES, Integer.parseInt(args[1]));
-                          }
-                      } catch (NumberFormatException var15) {
-                          this.plugin.printM("'" + partFX + "' was provided as a particle effect for the weapon '" + parentNode + "'. It contains '" + args[1] + "', which is not a valid number.");
-                      }
-                  }
-              }
-
-          }
-      }
-  */
     public void giveParticleEffects(
             Entity entity,
             String parentNode,
@@ -1557,13 +1329,12 @@ public class CSMinion {
             Location givenCoord
     ) {
 
-        if (!plugin.getBoolean(parentNode + ".Particles.Enable")
+        if (!ConfigCache.getBoolean(parentNode + ".Particles.Enable")
                 && givenCoord == null) {
             return;
         }
 
-        String effects =
-                plugin.getString(parentNode + childNode);
+        String effects = ConfigCache.getString(parentNode + childNode);
 
         if (effects == null) {
             return;
@@ -1577,35 +1348,16 @@ public class CSMinion {
         for (String rawEffect : effects.split(",")) {
 
             try {
-
-                ParticleEffectData effect =
-                        ParticleEffectParser.parse(rawEffect);
-
-                ParticleEffectExecutor.play(
-                        world,
-                        location,
-                        effect,
-                        parentNode
-                );
+                ParticleEffectData effect = ParticleEffectParser.parse(rawEffect);
+                ParticleEffectExecutor.play(world, location, effect, parentNode);
 
             } catch (Exception ex) {
-
-                plugin.printM(
-                        "Invalid particle effect '" +
-                                rawEffect +
-                                "' for weapon '" +
-                                parentNode +
-                                "'"
-                );
+                plugin.printM("Invalid particle effect '" + rawEffect + "' for weapon '" + parentNode + "'");
             }
         }
     }
 
-    private Location resolveLocation(
-            Entity entity,
-            Location givenCoord,
-            boolean muzzleFlash
-    ) {
+    private Location resolveLocation(Entity entity, Location givenCoord, boolean muzzleFlash) {
 
         if (givenCoord != null) {
             return givenCoord;
@@ -1621,10 +1373,7 @@ public class CSMinion {
                 ((LivingEntity) entity).getEyeLocation();
 
         return eyeLocation.toVector()
-                .add(
-                        eyeLocation.getDirection()
-                                .multiply(1.5D)
-                )
+                .add(eyeLocation.getDirection().multiply(1.5D))
                 .toLocation(eyeLocation.getWorld());
     }
 
@@ -1656,55 +1405,11 @@ public class CSMinion {
 
     public boolean regionCheck(Entity player, String parentNode) {
         // Региональная проверка работает по кубоидам из конфига без сторонних зависимостей типа WorldGuard.
-       /* if (!this.plugin.getBoolean(parent_node + ".Region_Check.Enable")) {
-            return true;
-        } else {
-            String region_info = this.plugin.getString(parent_node + ".Region_Check.World_And_Coordinates");
-            String[] regions = region_info.split("\\|");
-            boolean retVal = false;
-            boolean relevance = false;
-
-            for(String region : regions) {
-                region = region.replace(" ", "");
-                String[] args = region.split(",");
-                if (args != null && (args.length == 7 || args.length == 8)) {
-                    boolean blackList = args.length == 8 && Boolean.parseBoolean(args[7]);
-
-                    try {
-                        World regionWorld = Bukkit.getWorld(args[0]);
-                        Location locPoint = player.getLocation();
-                        Location locOne = new Location(regionWorld, Double.parseDouble(args[1]), Double.parseDouble(args[2]), Double.valueOf(args[3]));
-                        Location locTwo = new Location(regionWorld, Double.parseDouble(args[4]), Double.parseDouble(args[5]), Double.valueOf(args[6]));
-                        if (player.getWorld().equals(regionWorld)) {
-                            relevance = true;
-                            if (this.isInsideCuboid(locPoint, locOne, locTwo, regionWorld)) {
-                                if (blackList) {
-                                    return false;
-                                }
-
-                                retVal = true;
-                            } else if (blackList) {
-                                retVal = true;
-                            }
-                        }
-                    } catch (NumberFormatException var17) {
-                        if (player instanceof Player) {
-                            player.sendMessage(this.heading + "The value provided for the 'World_And_Coordinates' node of the weapon '" + parent_node + "' is incorrect. Double check the coordinates.");
-                        }
-                    }
-                } else if (player instanceof Player) {
-                    player.sendMessage(this.heading + "The 'World_And_Coordinates' node of the weapon '" + parent_node + "' has an incorrect number of arguments.");
-                }
-            }
-
-            return relevance ? retVal : true;
-        }*/
-        if (!plugin.getBoolean(parentNode + ".Region_Check.Enable")) {
+        if (!ConfigCache.getBoolean(parentNode + ".Region_Check.Enable")) {
             return true;
         }
 
-        String regionInfo =
-                plugin.getString(parentNode + ".Region_Check.World_And_Coordinates");
+        String regionInfo = ConfigCache.getString(parentNode + ".Region_Check.World_And_Coordinates");
 
         List<CuboidRegion> regions =
                 RegionParser.parse(regionInfo);
@@ -1714,8 +1419,8 @@ public class CSMinion {
 
     public void weaponInteraction(Player shooter, String parent_node, boolean leftClick) {
         // Перед фактическим выстрелом проверяем тип снаряда, воду и вызываем prepare-событие для внешних плагинов.
-        String projType = this.plugin.getString(parent_node + ".Shooting.Projectile_Type");
-        boolean underwater = this.plugin.getBoolean(parent_node + ".Extras.Disable_Underwater");
+        String projType = ConfigCache.getString(parent_node + ".Shooting.Projectile_Type");
+        boolean underwater = ConfigCache.getBoolean(parent_node + ".Extras.Disable_Underwater");
         String[] validTypes = new String[]{"arrow", "snowball", "egg", "grenade", "flare", "fireball", "witherskull", "energy", "splash"};
         if (underwater) {
             Location loc = shooter.getEyeLocation();
@@ -1744,12 +1449,12 @@ public class CSMinion {
 
     public void callAirstrike(final Entity mark, final String parent_node, final Player player) {
         // Airstrike раскладывает сетку падающих блоков с вариацией по координатам и несколькими волнами.
-        final int height = this.plugin.getInt(parent_node + ".Airstrikes.Height_Dropped");
-        final int area = this.plugin.getInt(parent_node + ".Airstrikes.Area");
-        final int spacing = this.plugin.getInt(parent_node + ".Airstrikes.Distance_Between_Bombs");
-        int strikeNo = this.plugin.getInt(parent_node + ".Airstrikes.Multiple_Strikes.Number_Of_Strikes");
-        int strikeDelay = this.plugin.getInt(parent_node + ".Airstrikes.Multiple_Strikes.Delay_Between_Strikes");
-        boolean multiStrike = this.plugin.getBoolean(parent_node + ".Airstrikes.Multiple_Strikes.Enable");
+        final int height = ConfigCache.getInt(parent_node + ".Airstrikes.Height_Dropped");
+        final int area = ConfigCache.getInt(parent_node + ".Airstrikes.Area");
+        final int spacing = ConfigCache.getInt(parent_node + ".Airstrikes.Distance_Between_Bombs");
+        int strikeNo = ConfigCache.getInt(parent_node + ".Airstrikes.Multiple_Strikes.Number_Of_Strikes");
+        int strikeDelay = ConfigCache.getInt(parent_node + ".Airstrikes.Multiple_Strikes.Delay_Between_Strikes");
+        boolean multiStrike = ConfigCache.getBoolean(parent_node + ".Airstrikes.Multiple_Strikes.Enable");
         final double coordinator = (double) (area - 1) * ((double) spacing / (double) 2.0F);
         final Location loc = mark.getLocation();
         final int y = loc.getBlockY();
@@ -1759,9 +1464,9 @@ public class CSMinion {
         }
 
         final Random r = new Random();
-        final int vVar = this.plugin.getInt(parent_node + ".Airstrikes.Vertical_Variation");
-        final int hVar = this.plugin.getInt(parent_node + ".Airstrikes.Horizontal_Variation");
-        String block = this.plugin.getString(parent_node + ".Airstrikes.Block_Type");
+        final int vVar = ConfigCache.getInt(parent_node + ".Airstrikes.Vertical_Variation");
+        final int hVar = ConfigCache.getInt(parent_node + ".Airstrikes.Horizontal_Variation");
+        String block = ConfigCache.getString(parent_node + ".Airstrikes.Block_Type");
         if (block != null) {
             String[] blockInfo = block.split("~");
             if (blockInfo.length < 2) {
@@ -1771,7 +1476,7 @@ public class CSMinion {
             try {
                 final Material blockMat = MaterialManager.getMaterial(block);
                 final Byte secondaryData = Byte.valueOf(blockInfo[1]);
-                this.plugin.sendPlayerMessage(player, parent_node, ".Airstrikes.Message_Call_Airstrike", player.getName(), "<victim>", "<flight>", "<damage>");
+                CommandUtils.sendPlayerMessage(player, parent_node, ".Airstrikes.Message_Call_Airstrike", player.getName(), "<victim>", "<flight>", "<damage>");
                 this.giveParticleEffects(null, parent_node, ".Airstrikes.Particle_Call_Airstrike", false, loc);
                 WeaponExplodeEvent explodeEvent = new WeaponExplodeEvent(player, loc, parent_node, false, true);
                 this.plugin.getServer().getPluginManager().callEvent(explodeEvent);
@@ -1779,7 +1484,7 @@ public class CSMinion {
                 for (int delay = 0; delay < strikeDelay * strikeNo; delay += strikeDelay) {
                     Bukkit.getScheduler().scheduleSyncDelayedTask(this.plugin, new Runnable() {
                         public void run() {
-                            CSMinion.this.plugin.playSoundEffects(mark, parent_node, ".Airstrikes.Sounds_Airstrike", false, (Location) null, new String[0]);
+                            SoundUtils.playSoundEffects(mark, parent_node, ".Airstrikes.Sounds_Airstrike", false, (Location) null, new String[0]);
 
                             for (int iOne = 0; iOne < area; ++iOne) {
                                 double x = (double) (loc.getBlockX() + iOne * spacing) - coordinator;
@@ -1867,15 +1572,15 @@ public class CSMinion {
 
                         if (!clacker) {
                             if (player != null) {
-                                this.plugin.sendPlayerMessage(player, parent_node, ".Explosive_Devices.Message_Trigger_Placer", storedPlayerName.replace(String.valueOf('ظ'), "..."), victim.getName(), "<flight>", "<damage>");
-                                this.plugin.playSoundEffects(player, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
+                                CommandUtils.sendPlayerMessage(player, parent_node, ".Explosive_Devices.Message_Trigger_Placer", storedPlayerName.replace(String.valueOf('ظ'), "..."), victim.getName(), "<flight>", "<damage>");
+                                SoundUtils.playSoundEffects(player, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
                             }
 
-                            this.plugin.sendPlayerMessage(victim, parent_node, ".Explosive_Devices.Message_Trigger_Victim", storedPlayerName.replace(String.valueOf('ظ'), "..."), victim.getName(), "<flight>", "<damage>");
+                            CommandUtils.sendPlayerMessage(victim, parent_node, ".Explosive_Devices.Message_Trigger_Victim", storedPlayerName.replace(String.valueOf('ظ'), "..."), victim.getName(), "<flight>", "<damage>");
                         }
 
                         c4Block.setMetadata("CS_transformers", new FixedMetadataValue(this.plugin, true));
-                        this.plugin.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, loc, new String[0]);
+                        SoundUtils.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, loc, new String[0]);
                         this.plugin.projectileExplosion(null, parent_node, false, player, false, true, loc, c4, false, 0);
                         break;
                     }
@@ -1887,9 +1592,9 @@ public class CSMinion {
 
     public boolean boobyAction(Block block, Entity victim, ItemStack item) {
         // Ловушка на ItemFrame/pressure plate определяет владельца по строке в display name предмета.
-        if (item != null && this.plugin.itemIsSafe(item)) {
+        if (item != null && ItemUtils.itemIsSafe(item)) {
             String itemName = item.getItemMeta().getDisplayName();
-            String actualName = this.plugin.getPureName(itemName);
+            String actualName = NameUtils.getPureName(itemName);
             String parent_node = this.plugin.boobs.get(actualName);
             if (parent_node == null) {
                 return false;
@@ -1913,16 +1618,16 @@ public class CSMinion {
                                     return false;
                                 }
 
-                                this.plugin.sendPlayerMessage(planter, parent_node, ".Explosive_Devices.Message_Trigger_Placer", detectedName, vicName, "<flight>", "<damage>");
-                                this.plugin.playSoundEffects(planter, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
+                                CommandUtils.sendPlayerMessage(planter, parent_node, ".Explosive_Devices.Message_Trigger_Placer", detectedName, vicName, "<flight>", "<damage>");
+                                SoundUtils.playSoundEffects(planter, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null, new String[0]);
                             }
 
                             if (victim instanceof Player) {
-                                this.plugin.sendPlayerMessage((LivingEntity) victim, parent_node, ".Explosive_Devices.Message_Trigger_Victim", detectedName, vicName, "<flight>", "<damage>");
+                                CommandUtils.sendPlayerMessage((LivingEntity) victim, parent_node, ".Explosive_Devices.Message_Trigger_Victim", detectedName, vicName, "<flight>", "<damage>");
                             }
                         }
 
-                        this.plugin.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, block.getLocation().add((double) 0.5F, (double) 0.5F, (double) 0.5F), new String[0]);
+                        SoundUtils.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, block.getLocation().add((double) 0.5F, (double) 0.5F, (double) 0.5F), new String[0]);
                         this.plugin.projectileExplosion(null, parent_node, false, planter, false, true, (Location) null, block, true, 0);
                         return true;
                     }
@@ -1934,7 +1639,7 @@ public class CSMinion {
     }
 
     public boolean getBoobean(int entry, String parent_node) {
-        String ore = this.plugin.getString(parent_node + ".Explosive_Devices.Device_Info");
+        String ore = ConfigCache.getString(parent_node + ".Explosive_Devices.Device_Info");
         if (ore == null) {
             return false;
         } else {
@@ -1943,22 +1648,7 @@ public class CSMinion {
         }
     }
 
-    //    public ItemStack parseItemStack(String ore) {
-//        ItemStack item = null;
-//        if (ore != null) {
-//            String[] refinedOre = ore.split("~");
-//            if (refinedOre.length == 1) {
-//                refinedOre = new String[]{refinedOre[0], "0"};
-//            }
-//
-//            try {
-//                item = new ItemStack(MaterialManager.getMaterial(ore), 1, Short.parseShort(refinedOre[1]));
-//            } catch (Exception var5) {
-//            }
-//        }
-//
-//        return item;
-//    }
+
     public ItemStack parseItemStack(String ore) {
         if (ore == null || ore.trim().isEmpty()) return null;
 
@@ -2018,26 +1708,7 @@ public class CSMinion {
         return item;
     }
 
-//    public void runCommand(Player player, String weaponTitle) {
-//        // Команды из конфига разделены специальным разделителем и могут исполняться как от игрока, так и от консоли.
-//        String commands = this.plugin.getString(weaponTitle + ".Extras.Run_Command");
-//        if (commands != null) {
-//            commands = commands.replaceAll("<shooter>", player.getName());
-//            Server server = this.plugin.getServer();
-//            String delimiter = "่๋້";
-//
-//
-//            for (String command : commands.split(delimiter)) {
-//                if (command.startsWith("@")) {
-//                    server.dispatchCommand(server.getConsoleSender(), command.substring(1).trim());
-//                } else {
-//                    server.dispatchCommand(player, command.trim());
-//                }
-//            }
-//        }
-//
-//
-//    }
+
 
     private void log(String msg) {
         System.out.println("[CrackShot] '" + msg);

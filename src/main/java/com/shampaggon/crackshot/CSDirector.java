@@ -7,9 +7,12 @@ import com.shampaggon.crackshot.compatibility.MaterialManager;
 import com.shampaggon.crackshot.compatibility.SoundCache;
 import com.shampaggon.crackshot.compatibility.SoundManager;
 import com.shampaggon.crackshot.events.*;
-import fun.cactus.utils.commands.CommandExecutor;
+import fun.cactus.utils.*;
 import fun.cactus.utils.commands.CommandStorage;
+import fun.cactus.utils.commands.CommandUtils;
 import fun.cactus.utils.commands.WeaponCommandManager;
+import fun.cactus.utils.config.ConfigCache;
+import fun.cactus.utils.config.ConfigCacheUtils;
 import fun.cactus.utils.devices.*;
 import fun.cactus.utils.entuty.EntityConfigurator;
 import fun.cactus.utils.entuty.EntityFactory;
@@ -21,15 +24,18 @@ import fun.cactus.utils.enchantment.*;
 import fun.cactus.utils.projectileSub.ProjectileSubtypeData;
 import fun.cactus.utils.projectileSub.ProjectileSubtypeParser;
 import fun.cactus.utils.projectileSub.ProjectileSubtypeType;
+import fun.cactus.modules.ModuleFactory;
+import fun.cactus.modules.WeaponModule;
+import fun.cactus.utils.weapon.WeaponAttachmentUtils;
+import fun.cactus.utils.weapon.WeaponHelperUtils;
+import fun.cactus.utils.weapon.WeaponIndexUtils;
 import lombok.Getter;
 import org.bukkit.*;
 import org.bukkit.block.*;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.craftbukkit.v1_16_R3.CraftServer;
-import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.*;
-import org.bukkit.entity.Skeleton.SkeletonType;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -49,7 +55,6 @@ import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.material.Dispenser;
 import org.bukkit.material.MaterialData;
 import org.bukkit.metadata.FixedMetadataValue;
-import org.bukkit.metadata.MetadataValue;
 import org.bukkit.permissions.PermissionAttachment;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
@@ -99,6 +104,7 @@ public class CSDirector extends JavaPlugin implements Listener {
     public static Map<String, Double> dubs = new HashMap<>();
     public static Map<String, Boolean> bools = new HashMap<>();
     public static Map<String, String> strings = new HashMap<>();
+    public static Map<String, WeaponModule> weaponModules = new HashMap<>();
     public String[] disWorlds = new String[]{"0"};
 
     @Getter
@@ -125,22 +131,7 @@ public class CSDirector extends JavaPlugin implements Listener {
     public final CSMinion csminion = new CSMinion(this);
 
     private static final String COMMAND_LIST_DELIMITER = "่๋້";
-    private static final String[] DIRECT_STRING_NODES = {
-            ".Item_Information.Item_Type",
-            ".Ammo.Ammo_Item_ID",
-            ".Shooting.Projectile_Subtype",
-            ".Crafting.Ingredients",
-            ".Explosive_Devices.Device_Info",
-            ".Airstrikes.Block_Type",
-            ".Cluster_Bombs.Bomblet_Type",
-            ".Shrapnel.Block_Type",
-            ".Explosions.Damage_Multiplier"
-    };
-    private static final String[] DIRECT_DOUBLE_NODES = {
-            ".Shooting.Bullet_Spread",
-            ".Sneak.Bullet_Spread",
-            ".Scope.Zoom_Bullet_Spread"
-    };
+
 
     // Инициализация совместимости, загрузка конфигов и регистрация команды/слушателей.
     public void onEnable() {
@@ -199,37 +190,73 @@ public class CSDirector extends JavaPlugin implements Listener {
     // При выключении сначала чистим активное состояние игроков и сущностей, затем кэши и рецепты.
     public void onDisable() {
         Bukkit.getScheduler().cancelTasks(this);
-        this.cleanupOnlinePlayers();
-        this.clearTrackedItemBombs();
-        this.clearTransientState();
-        this.clearConfigurationCaches();
+        StateClearUtils.cleanupOnlinePlayers();
+        StateClearUtils.clearTrackedItemBombs();
+        StateClearUtils.clearTransientState();
+        StateClearUtils.clearConfigurationCaches();
         this.csminion.clearRecipes();
     }
 
     public void fillHashMaps(FileConfiguration config) {
         // Сначала кэшируем простые значения, затем собираем производные индексы для быстрого доступа по оружию.
-        this.cachePrimitiveValues(config);
+        ConfigCacheUtils.cachePrimitiveValues(config);
 
         for (String parentNode : config.getKeys(false)) {
-            String attachmentType = this.getString(parentNode + ".Item_Information.Attachments.Type");
-            boolean accessory = this.isAccessory(attachmentType);
+            String attachmentType = ConfigCache.getString(parentNode + ".Item_Information.Attachments.Type");
+            boolean accessory = WeaponHelperUtils.isAccessory(attachmentType);
 
-            this.cacheDirectWeaponValues(config, parentNode);
-            this.registerInventoryGroups(parentNode);
+            ConfigCacheUtils.cacheDirectWeaponValues(config, parentNode);
+            WeaponIndexUtils.registerInventoryGroups(parentNode);
             this.registerEnchantmentCheck(parentNode);
             this.registerItemAlias(parentNode);
             this.registerDurabilityTracking(config, parentNode, accessory);
             this.commandStorage.registerRunCommands(config, parentNode);
-//            this.registerRunCommands(config, parentNode);
-            this.registerWeaponName(config, parentNode, accessory);
+            WeaponIndexUtils.registerWeaponName(config, parentNode, accessory);
             this.registerMeleeFlag(parentNode, attachmentType);
             this.registerExplosiveMappings(config, parentNode);
+            this.initializeWeaponModule(config, parentNode);
         }
+    }
+
+    /**
+     * Инициализирует WeaponModule для оружия из конфигурации
+     */
+    private void initializeWeaponModule(FileConfiguration config, String parentNode) {
+        try {
+            WeaponModule weapon = new WeaponModule(parentNode);
+            weapon.setAmmoModule(ModuleFactory.parseAmmoModule(config, parentNode));
+            weapon.setReloadModule(ModuleFactory.parseReloadModule(config, parentNode));
+            weapon.setShootingModule(ModuleFactory.parseShootingModule(config, parentNode));
+            weapon.setFirearmActionModule(ModuleFactory.parseFirearmActionModule(config, parentNode));
+            
+            if (weapon.validateAllModules()) {
+                weaponModules.put(parentNode, weapon);
+            } else {
+                this.plugin.getLogger().warning("Weapon '" + parentNode + "' has invalid module configuration");
+            }
+        } catch (Exception e) {
+            this.plugin.getLogger().warning("Failed to initialize modules for weapon '" + parentNode + "': " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Получает WeaponModule для оружия по названию
+     */
+    public WeaponModule getWeaponModule(String weaponName) {
+        return weaponModules.get(weaponName);
+    }
+
+    /**
+     * Проверяет наличие WeaponModule для оружия
+     */
+    public boolean hasWeaponModule(String weaponName) {
+        return weaponModules.containsKey(weaponName);
     }
 
     public void reloadConfig(CommandSender sender) {
         this.csminion.clearRecipes();
-        this.clearConfigurationCaches();
+        StateClearUtils.clearConfigurationCaches();
         Player cmdReloader = sender instanceof Player ? (Player) sender : null;
         this.csminion.loadWeapons(cmdReloader);
         this.csminion.loadGeneralConfig();
@@ -237,67 +264,17 @@ public class CSDirector extends JavaPlugin implements Listener {
         this.csminion.customRecipes();
     }
 
-    private void cachePrimitiveValues(FileConfiguration config) {
-        for (String key : config.getKeys(true)) {
-            Object obj = config.get(key);
-            if (obj instanceof Boolean) {
-                bools.put(key, (Boolean) obj);
-            } else if (obj instanceof Integer) {
-                ints.put(key, (Integer) obj);
-            } else if (obj instanceof String) {
-                strings.put(key, ((String) obj).replaceAll("&", "§"));
-            }
-        }
-    }
 
-    private void cacheDirectWeaponValues(FileConfiguration config, String parentNode) {
-        for (String path : DIRECT_STRING_NODES) {
-            strings.put(parentNode + path, config.getString(parentNode + path));
-        }
 
-        for (String path : DIRECT_DOUBLE_NODES) {
-            dubs.put(parentNode + path, config.getDouble(parentNode + path));
-        }
-    }
 
-    private void registerInventoryGroups(String parentNode) {
-        String inventoryControl = this.getString(parentNode + ".Item_Information.Inventory_Control");
-        if (inventoryControl == null) {
-            return;
-        }
 
-        for (String group : inventoryControl.replace(" ", "").split(",")) {
-            this.grouplist.computeIfAbsent(group, key -> new HashSet<>()).add(parentNode);
-        }
-    }
+
 
     private void registerEnchantmentCheck(String parentNode) {
-      /*  String enchantKey = this.getString(parentNode + ".Item_Information.Enchantment_To_Check");
-        if (enchantKey == null) {
-            return;
-        }
 
-        String[] enchantInfo = enchantKey.split("-");
-        if (enchantInfo.length != 2) {
-            return;
-        }
+        String enchantKey = ConfigCache.getString(parentNode + ".Item_Information.Enchantment_To_Check");
 
-        if (Enchantment.getByName(enchantInfo[0]) == null) {
-            this.printM("For the weapon '" + parentNode + "', the value provided for 'Enchantment_To_Check' does not contain a valid enchantment type.");
-            return;
-        }
-
-        try {
-            Integer.parseInt(enchantInfo[1]);
-            this.enchlist.put(parentNode, enchantInfo);
-        } catch (NumberFormatException exception) {
-            this.printM("For the weapon '" + parentNode + "', the value provided for 'Enchantment_To_Check' does not contain a valid enchantment level.");
-        }*/
-
-        String enchantKey = getString(parentNode + ".Item_Information.Enchantment_To_Check");
-
-        EnchantmentCheck check =
-                EnchantmentCheckParser.parse(enchantKey);
+        EnchantmentCheck check = EnchantmentCheckParser.parse(enchantKey);
 
         if (check == null && enchantKey != null) {
             printM("For the weapon '" + parentNode +
@@ -309,11 +286,11 @@ public class CSDirector extends JavaPlugin implements Listener {
     }
 
     private void registerItemAlias(String parentNode) {
-        if (!this.getBoolean(parentNode + ".Item_Information.Skip_Name_Check")) {
+        if (!ConfigCache.getBoolean(parentNode + ".Item_Information.Skip_Name_Check")) {
             return;
         }
 
-        String itemInfo = this.getString(parentNode + ".Item_Information.Item_Type");
+        String itemInfo = ConfigCache.getString(parentNode + ".Item_Information.Item_Type");
         ItemStack item = this.csminion.parseItemStack(itemInfo);
         if (item != null) {
             this.convIDs.put(item.getType() + "-" + item.getDurability(), parentNode);
@@ -334,92 +311,15 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
     }
 
-//    private void registerRunCommands(FileConfiguration config, String parentNode) {
-//        List<String> commandList = config.getStringList(parentNode + ".Extras.Run_Command");
-//        if (commandList.isEmpty()) {
-//            return;
-//        }
-//
-//        StringBuilder stringList = new StringBuilder();
-//        for (int index = 0; index < commandList.size(); index++) {
-//            String command = commandList.get(index).trim();
-//            if (index != 0) {
-//                stringList.append(COMMAND_LIST_DELIMITER);
-//            }
-//
-//            if (command.startsWith("@")) {
-//                stringList.append("@").append(command.substring(1).trim());
-//            } else {
-//                stringList.append(command);
-//            }
-//        }
-//
-//        strings.put(parentNode + ".Extras.Run_Command", stringList.toString().replaceAll("&", "§"));
-//    }
-
-    private void registerWeaponName(FileConfiguration config, String parentNode, boolean accessory) {
-        String name = accessory ? "§f" + parentNode : config.getString(parentNode + ".Item_Information.Item_Name");
-        if (name == null) {
-            this.printM("The weapon '" + parentNode + "' does not have a value for Item_Name.");
-            return;
-        }
-
-        String normalizedName = this.normalizeWeaponName(name);
-        String existingEntry = this.parentlist.get(normalizedName);
-        if (existingEntry == null) {
-            this.parentlist.put(normalizedName, parentNode);
-        } else if (!accessory) {
-            String nameA = config.getString(parentNode + ".Item_Information.Item_Name");
-            String nameB = config.getString(existingEntry + ".Item_Information.Item_Name");
-            String msg = "The item names of '" + parentNode + "' and '" + existingEntry + "' are too similar: ";
-            msg = msg + "'" + nameA + "' and '" + nameB + "'. ";
-            msg = msg + "Each weapon must have a unique value for Item_Name.";
-            this.printM(msg);
-        }
-
-        strings.put(parentNode + ".Item_Information.Item_Name", normalizedName);
-    }
-
-
-    private String normalizeWeaponName(String rawName) {
-        String name = ChatColor.translateAlternateColorCodes('&', rawName);
-        String lastColors = ChatColor.getLastColors(name);
-
-        return toDisplayForm(
-                lastColors.isEmpty()
-                        ? ChatColor.WHITE + name + ChatColor.WHITE
-                        : name + lastColors
-        );
-    }
-
     private void registerMeleeFlag(String parentNode, String attachmentType) {
-        boolean meleeMode = this.getBoolean(parentNode + ".Item_Information.Melee_Mode");
-        String meleeAttach = this.getString(parentNode + ".Item_Information.Melee_Attachment");
+        boolean meleeMode = ConfigCache.getBoolean(parentNode + ".Item_Information.Melee_Mode");
+        String meleeAttach = ConfigCache.getString(parentNode + ".Item_Information.Melee_Attachment");
         if (meleeAttach != null || meleeMode || "main".equalsIgnoreCase(attachmentType)) {
             this.melees.add(parentNode);
         }
     }
 
-    //    private void registerExplosiveMappings(FileConfiguration config, String parentNode) {
-//        if (!config.getBoolean(parentNode + ".Explosive_Devices.Enable")) {
-//            return;
-//        }
-//
-//        String deviceInfo = config.getString(parentNode + ".Explosive_Devices.Device_Info");
-//        if (deviceInfo != null) {
-//            String[] rdeRefined = deviceInfo.split("-");
-//            if (rdeRefined.length == 3) {
-//                this.rdelist.put(rdeRefined[1], parentNode);
-//            }
-//        }
-//
-//        String deviceType = config.getString(parentNode + ".Explosive_Devices.Device_Type");
-//        if ("trap".equalsIgnoreCase(deviceType)) {
-//            String itemName = this.getString(parentNode + ".Item_Information.Item_Name");
-//            String displayName = this.toDisplayForm(itemName);
-//            this.boobs.put(displayName, parentNode);
-//        }
-//    }
+
     public void registerExplosiveMappings(FileConfiguration config, String parentNode) {
 
         if (!config.getBoolean(parentNode + ".Explosive_Devices.Enable")) {
@@ -444,69 +344,23 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         if ("trap".equalsIgnoreCase(deviceType)) {
 
-            String itemName = getString(parentNode + ".Item_Information.Item_Name");
+            String itemName = ConfigCache.getString(parentNode + ".Item_Information.Item_Name");
 
-            String displayName = toDisplayForm(itemName);
+            String displayName = NameUtils.toDisplayForm(itemName);
 
             boobs.put(displayName, parentNode);
         }
     }
 
-    private boolean isAccessory(String attachmentType) {
-        return attachmentType != null && attachmentType.equalsIgnoreCase("accessory");
-    }
 
-    private void cleanupOnlinePlayers() {
-        for (Player player : Bukkit.getServer().getOnlinePlayers()) {
-            this.removeInertReloadTag(player, 0, true);
-            this.unscopePlayer(player);
-            this.terminateAllBursts(player);
-            this.terminateReload(player);
-        }
-    }
 
-    // Удаляем подвешенные itembomb-сущности до очистки кэшей, чтобы они не переживали перезагрузку плагина.
-    private void clearTrackedItemBombs() {
-        for (Map<String, ArrayDeque<Item>> subList : this.itembombs.values()) {
-            for (ArrayDeque<Item> subSubList : subList.values()) {
-                while (!subSubList.isEmpty()) {
-                    subSubList.removeFirst().remove();
-                }
-            }
-        }
-    }
 
-    private void clearTransientState() {
-        this.zoomStorage.clear();
-        this.burst_task_IDs.clear();
-        this.global_reload_IDs.clear();
-        this.itembombs.clear();
-        this.last_shot_list.clear();
-        this.c4_backup.clear();
-        this.delayed_reload_IDs.clear();
-        this.delay_list.clear();
-        this.last_drop.clear();
-        this.rpm_ticks.clear();
-        this.rpm_shots.clear();
-    }
 
-    private void clearConfigurationCaches() {
-        this.disWorlds = new String[]{"0"};
-        bools.clear();
-        ints.clear();
-        strings.clear();
-        dubs.clear();
-        this.morobust.clear();
-        this.wlist.clear();
-        this.rdelist.clear();
-        this.boobs.clear();
-        this.grouplist.clear();
-        this.melees.clear();
-        this.enchlist.clear();
-        this.convIDs.clear();
-        this.parentlist.clear();
-        CSMessages.messages.clear();
-    }
+
+
+
+
+
 
     // Главный обработчик взаимодействий: выстрел, прицел, переключение обвесов, установка мин и работа ловушек.
     @EventHandler
@@ -522,12 +376,12 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             Player shooter = event.getPlayer();
             ItemStack item = shooter.getItemInHand();
-            String parent_node = this.returnParentNode(shooter);
+            String parent_node = ItemUtils.returnParentNode(shooter);
             if (parent_node == null) {
                 return;
             }
 
-            if (!this.getBoolean(parent_node + ".Item_Information.Melee_Mode") && !this.validHotbar(shooter, parent_node)) {
+            if (!ConfigCache.getBoolean(parent_node + ".Item_Information.Melee_Mode") && !this.validHotbar(shooter, parent_node)) {
                 return;
             }
 
@@ -535,8 +389,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                 return;
             }
 
-            boolean rightShoot = this.getBoolean(parent_node + ".Shooting.Right_Click_To_Shoot");
-            boolean dualWield = this.isDualWield(shooter, parent_node, item);
+            boolean rightShoot = ConfigCache.getBoolean(parent_node + ".Shooting.Right_Click_To_Shoot");
+            boolean dualWield = WeaponHelperUtils.isDualWield(shooter, parent_node, item);
             boolean leftClick = event.getAction() == Action.LEFT_CLICK_AIR || event.getAction() == Action.LEFT_CLICK_BLOCK;
             boolean rightClick = event.getAction() == Action.RIGHT_CLICK_AIR || event.getAction() == Action.RIGHT_CLICK_BLOCK;
             UUID playerUuid = shooter.getUniqueId();
@@ -547,8 +401,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
             }
 
-            boolean rdeEnable = this.getBoolean(parent_node + ".Explosive_Devices.Enable");
-            String[] attachTypeAndInfo = this.getAttachment(parent_node, item);
+            boolean rdeEnable = ConfigCache.getBoolean(parent_node + ".Explosive_Devices.Enable");
+            String[] attachTypeAndInfo = WeaponAttachmentUtils.getAttachment(parent_node, item);
             // Обвесы и dual wield взаимоисключают друг друга, поэтому проверяем конфликт здесь.
             if (attachTypeAndInfo[0] != null) {
                 if (attachTypeAndInfo[0].equalsIgnoreCase("accessory") && rdeEnable) {
@@ -563,7 +417,7 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
 
             if (event.getAction() == Action.LEFT_CLICK_BLOCK) {
-                boolean noBlockDmg = this.getBoolean(parent_node + ".Shooting.Cancel_Left_Click_Block_Damage");
+                boolean noBlockDmg = ConfigCache.getBoolean(parent_node + ".Shooting.Cancel_Left_Click_Block_Damage");
                 if (noBlockDmg) {
                     event.setCancelled(true);
                 }
@@ -571,7 +425,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             if (event.getAction() == Action.RIGHT_CLICK_AIR || event.getAction() == Action.RIGHT_CLICK_BLOCK) {
 
-                boolean rightInteract = this.getBoolean(parent_node + ".Shooting.Cancel_Right_Click_Interactions");
+                boolean rightInteract = ConfigCache.getBoolean(parent_node + ".Shooting.Cancel_Right_Click_Interactions");
                 if (rightInteract) {
                     event.setCancelled(true);
                 }
@@ -583,13 +437,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                 return;
             }
 
-            if (!this.getBoolean(parent_node + ".Item_Information.Remove_Unused_Tag")) {
+            if (!ConfigCache.getBoolean(parent_node + ".Item_Information.Remove_Unused_Tag")) {
                 this.checkCorruption(item, attachTypeAndInfo[0] != null, dualWield);
             }
 
             if ((!rightShoot || !rightClick) && (rightShoot || !leftClick) && !dualWield) {
                 if (!dualWield && (rightShoot && leftClick || !rightShoot && rightClick)) {
-                    if (this.getBoolean(parent_node + ".Reload.Reload_With_Mouse")) {
+                    if (ConfigCache.getBoolean(parent_node + ".Reload.Reload_With_Mouse")) {
                         this.reloadAnimation(shooter, parent_node);
                         return;
                     }
@@ -609,7 +463,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                         boolean accessory = attachTypeAndInfo[0].equalsIgnoreCase("accessory");
                         if (main || accessory) {
                             if (main) {
-                                String attachValid = this.getString(attachTypeAndInfo[1] + ".Item_Information.Attachments.Type");
+                                String attachValid = ConfigCache.getString(attachTypeAndInfo[1] + ".Item_Information.Attachments.Type");
                                 if (attachTypeAndInfo[1] == null) {
                                     shooter.sendMessage(this.heading + "The weapon '" + parent_node + "' is missing the weapon title of an attachment!");
                                     return;
@@ -621,19 +475,19 @@ public class CSDirector extends JavaPlugin implements Listener {
                                 }
                             }
 
-                            int toggleDelay = this.getInt(parent_node + ".Item_Information.Attachments.Toggle_Delay");
+                            int toggleDelay = ConfigCache.getInt(parent_node + ".Item_Information.Attachments.Toggle_Delay");
                             WeaponAttachmentToggleEvent toggleEvent = new WeaponAttachmentToggleEvent(shooter, parent_node, item, toggleDelay);
                             this.getServer().getPluginManager().callEvent(toggleEvent);
                             if (toggleEvent.isCancelled()) {
                                 return;
                             }
 
-                            this.playSoundEffects(shooter, parent_node, ".Item_Information.Attachments.Sounds_Toggle", false, null);
+                            SoundUtils.playSoundEffects(shooter, parent_node, ".Item_Information.Attachments.Sounds_Toggle", false, null);
                             this.reloadShootDelay(shooter, parent_node, gunSlot, toggleEvent.getToggleDelay(), "noShooting", "toggles");
                             this.terminateAllBursts(shooter);
                             this.terminateReload(shooter);
                             this.removeInertReloadTag(shooter, 0, true);
-                            if (this.itemIsSafe(item)) {
+                            if (ItemUtils.itemIsSafe(item)) {
                                 String itemName = item.getItemMeta().getDisplayName();
                                 String triOne = String.valueOf('▶');
                                 String triTwo = String.valueOf('▷');
@@ -650,13 +504,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                         }
                     }
 
-                    boolean zoomEnable = this.getBoolean(parent_node + ".Scope.Enable");
-                    boolean nightScope = this.getBoolean(parent_node + ".Scope.Night_Vision");
+                    boolean zoomEnable = ConfigCache.getBoolean(parent_node + ".Scope.Enable");
+                    boolean nightScope = ConfigCache.getBoolean(parent_node + ".Scope.Night_Vision");
                     if (!zoomEnable || shooter.hasMetadata("markOfTheReload")) {
                         return;
                     }
 
-                    int zoomAmount = this.getInt(parent_node + ".Scope.Zoom_Amount");
+                    int zoomAmount = ConfigCache.getInt(parent_node + ".Scope.Zoom_Amount");
                     if (zoomAmount < 0 || zoomAmount == 0 || zoomAmount > 10) {
                         return;
                     }
@@ -667,7 +521,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                         return;
                     }
 
-                    this.playSoundEffects(shooter, parent_node, ".Scope.Sounds_Toggle_Zoom", false, null);
+                    SoundUtils.playSoundEffects(shooter, parent_node, ".Scope.Sounds_Toggle_Zoom", false, null);
                     if (shooter.hasPotionEffect(slowness)) {
                         for (PotionEffect pe : shooter.getActivePotionEffects()) {
                             if (pe.getType() == slowness) {
@@ -698,16 +552,16 @@ public class CSDirector extends JavaPlugin implements Listener {
                     }
                 }
             } else if (rdeEnable) {
-                String type = this.getString(parent_node + ".Explosive_Devices.Device_Type");
+                String type = ConfigCache.getString(parent_node + ".Explosive_Devices.Device_Type");
                 if (type != null) {
                     if (!type.equalsIgnoreCase("remote") && !type.equalsIgnoreCase("itembomb")) {
-                        if (type.equalsIgnoreCase("trap") && this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("«?»")) {
-                            String itemName = this.getString(parent_node + ".Item_Information.Item_Name");
+                        if (type.equalsIgnoreCase("trap") && ItemUtils.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("«?»")) {
+                            String itemName = ConfigCache.getString(parent_node + ".Item_Information.Item_Name");
                             this.csminion.setItemName(shooter.getInventory().getItemInHand(), itemName + " «" + shooter.getName() + "»");
-                            this.playSoundEffects(shooter, parent_node, ".Explosive_Devices.Sounds_Deploy", false, null);
+                            SoundUtils.playSoundEffects(shooter, parent_node, ".Explosive_Devices.Sounds_Deploy", false, null);
                         } else if (type.equalsIgnoreCase("landmine")) {
                             this.csminion.oneTime(shooter);
-                            this.playSoundEffects(shooter, parent_node, ".Explosive_Devices.Sounds_Deploy", false, null);
+                            SoundUtils.playSoundEffects(shooter, parent_node, ".Explosive_Devices.Sounds_Deploy", false, null);
                             this.deployMine(shooter, parent_node, null);
                         }
                     } else {
@@ -741,21 +595,21 @@ public class CSDirector extends JavaPlugin implements Listener {
             return;
         }
 
-        String parentNode = this.returnParentNode(player);
+        String parentNode = ItemUtils.returnParentNode(player);
         if (parentNode == null) {
             return;
         }
 
-        if (this.getBoolean(parentNode + ".Item_Information.Melee_Mode")) {
+        if (ConfigCache.getBoolean(parentNode + ".Item_Information.Melee_Mode")) {
             return;
         }
 
-        if (!this.isDualWield(player, parentNode, heldItem)) {
+        if (!WeaponHelperUtils.isDualWield(player, parentNode, heldItem)) {
             return;
         }
 
         Block targetBlock = player.getTargetBlockExact(5);
-        if (targetBlock != null && !this.isAir(targetBlock.getType())) {
+        if (targetBlock != null && !WeaponHelperUtils.isAir(targetBlock.getType())) {
             return;
         }
 
@@ -826,7 +680,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             for (int i = 0; i < 10; ++i) {
                 finalLoc.add(direction);
-                if (!this.isAir(finalLoc.getBlock().getType())) {
+                if (!WeaponHelperUtils.isAir(finalLoc.getBlock().getType())) {
                     this.OnPlayerInteract(new PlayerInteractEvent(player, Action.LEFT_CLICK_AIR, player.getItemInHand(), null, null));
                     break;
                 }
@@ -846,19 +700,19 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             if (!cancelMelee && entDmger instanceof Player && event.getCause() == DamageCause.ENTITY_ATTACK && !event.isCancelled() && entVictim instanceof LivingEntity) {
                 Player player = (Player) entDmger;
-                String parentNode = this.returnParentNode(player);
+                String parentNode = ItemUtils.returnParentNode(player);
                 if (parentNode != null && this.regionAndPermCheck(player, parentNode, true)) {
-                    int punchDelay = this.getInt(parentNode + ".Shooting.Delay_Between_Shots");
+                    int punchDelay = ConfigCache.getInt(parentNode + ".Shooting.Delay_Between_Shots");
                     int gunSlot = player.getInventory().getHeldItemSlot();
                     if (!player.hasMetadata(parentNode + "meleeDelay" + gunSlot)) {
-                        if (this.getBoolean(parentNode + ".Item_Information.Melee_Mode")) {
+                        if (ConfigCache.getBoolean(parentNode + ".Item_Information.Melee_Mode")) {
                             ItemStack item = player.getItemInHand();
-                            String ammoInfo = this.getString(parentNode + ".Ammo.Ammo_Item_ID");
-                            boolean reloadOn = this.getBoolean(parentNode + ".Reload.Enable");
-                            boolean ammoPerShot = this.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
-                            boolean ammoEnable = this.getBoolean(parentNode + ".Ammo.Enable");
-                            boolean takeAmmo = this.getBoolean(parentNode + ".Reload.Take_Ammo_On_Reload");
-                            int detectedAmmo = this.getAmmoBetweenBrackets(player, parentNode, item);
+                            String ammoInfo = ConfigCache.getString(parentNode + ".Ammo.Ammo_Item_ID");
+                            boolean reloadOn = ConfigCache.getBoolean(parentNode + ".Reload.Enable");
+                            boolean ammoPerShot = ConfigCache.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
+                            boolean ammoEnable = ConfigCache.getBoolean(parentNode + ".Ammo.Enable");
+                            boolean takeAmmo = ConfigCache.getBoolean(parentNode + ".Reload.Take_Ammo_On_Reload");
+                            int detectedAmmo = AmmoUtils.getAmmoBetweenBrackets(player, parentNode, item);
                             if (!this.validHotbar(player, parentNode)) {
                                 return;
                             }
@@ -873,12 +727,12 @@ public class CSDirector extends JavaPlugin implements Listener {
                                 }
 
                                 if (!this.csminion.containsItemStack(player, ammoInfo, 1, parentNode) && (ammoPerShot || takeAmmo && detectedAmmo == 0)) {
-                                    this.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, null);
+                                    SoundUtils.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, null);
                                     return;
                                 }
                             }
 
-                            if (this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains(String.valueOf('ᴿ'))) {
+                            if (ItemUtils.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains(String.valueOf('ᴿ'))) {
                                 if (detectedAmmo <= 0) {
                                     this.reloadAnimation(player, parentNode);
                                     return;
@@ -904,9 +758,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                             this.dealDamage(player, (LivingEntity) entVictim, event, parentNode);
                         } else {
-                            String meleeNode = this.getString(parentNode + ".Item_Information.Melee_Attachment");
+                            String meleeNode = ConfigCache.getString(parentNode + ".Item_Information.Melee_Attachment");
                             if (meleeNode != null) {
-                                punchDelay = this.getInt(meleeNode + ".Shooting.Delay_Between_Shots");
+                                punchDelay = ConfigCache.getInt(meleeNode + ".Shooting.Delay_Between_Shots");
                                 if (this.melees.contains(meleeNode)) {
                                     if (this.validHotbar(player, parentNode)) {
                                         player.setMetadata(parentNode + "meleeDelay" + gunSlot, new FixedMetadataValue(this, true));
@@ -957,7 +811,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                     parent_node = entDmger.getMetadata("CS_potex").get(0).asString();
                     if (event.getDamage() > (double) 1.0F && parent_node != null) {
                         try {
-                            String multiString = this.getString(parent_node + ".Explosions.Damage_Multiplier");
+                            String multiString = ConfigCache.getString(parent_node + ".Explosions.Damage_Multiplier");
                             if (multiString != null) {
                                 double multiplier = (double) Integer.parseInt(multiString) * 0.01;
                                 totalDmg *= multiplier;
@@ -968,7 +822,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                     }
                 }
 
-                int knockBack = this.getInt(parent_node + ".Explosions.Knockback");
+                int knockBack = ConfigCache.getInt(parent_node + ".Explosions.Knockback");
                 if (knockBack != 0 && !entVictim.hasMetadata("CS_shrapnel")) {
                     Vector vector = this.csminion.getAlignedDirection(entDmger.getLocation(), entVictim.getLocation());
                     entVictim.setVelocity(vector.multiply((double) knockBack * 0.1));
@@ -1022,18 +876,18 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             if (entVictim instanceof Player && !event.isCancelled()) {
                 Player blocker = (Player) entVictim;
-                String parentNode = this.returnParentNode(blocker);
+                String parentNode = ItemUtils.returnParentNode(blocker);
                 if (parentNode == null) {
                     return;
                 }
 
-                int durabPerHit = this.getInt(parentNode + ".Riot_Shield.Durability_Loss_Per_Hit");
-                boolean riotEnable = this.getBoolean(parentNode + ".Riot_Shield.Enable");
-                boolean durabDmg = this.getBoolean(parentNode + ".Riot_Shield.Durablity_Based_On_Damage");
-                boolean noProj = this.getBoolean(parentNode + ".Riot_Shield.Do_Not_Block_Projectiles");
-                boolean noMelee = this.getBoolean(parentNode + ".Riot_Shield.Do_Not_Block_Melee_Attacks");
-                boolean forceField = this.getBoolean(parentNode + ".Riot_Shield.Forcefield_Mode");
-                boolean mustBlock = this.getBoolean(parentNode + ".Riot_Shield.Only_Works_While_Blocking");
+                int durabPerHit = ConfigCache.getInt(parentNode + ".Riot_Shield.Durability_Loss_Per_Hit");
+                boolean riotEnable = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Enable");
+                boolean durabDmg = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Durablity_Based_On_Damage");
+                boolean noProj = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Do_Not_Block_Projectiles");
+                boolean noMelee = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Do_Not_Block_Melee_Attacks");
+                boolean forceField = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Forcefield_Mode");
+                boolean mustBlock = ConfigCache.getBoolean(parentNode + ".Riot_Shield.Only_Works_While_Blocking");
                 if (mustBlock && !blocker.isBlocking()) {
                     return;
                 }
@@ -1073,9 +927,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                 ItemStack shield = blocker.getInventory().getItemInHand();
                 shield.setDurability((short) (shield.getDurability() + durabPerHit));
-                this.playSoundEffects(blocker, parentNode, ".Riot_Shield.Sounds_Blocked", false, null);
+                SoundUtils.playSoundEffects(blocker, parentNode, ".Riot_Shield.Sounds_Blocked", false, null);
                 if (shield.getType().getMaxDurability() <= shield.getDurability()) {
-                    this.playSoundEffects(blocker, parentNode, ".Riot_Shield.Sounds_Break", false, null);
+                    SoundUtils.playSoundEffects(blocker, parentNode, ".Riot_Shield.Sounds_Break", false, null);
                     blocker.getInventory().clear(blocker.getInventory().getHeldItemSlot());
                     blocker.updateInventory();
                 }
@@ -1100,33 +954,33 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
 
         if (shooter != null) {
-            double projSpeed = (double) this.getInt(parent_node + ".Shooting.Projectile_Speed") * 0.1;
-            boolean hitEnable = this.getBoolean(parent_node + ".Hit_Events.Enable");
-            boolean headShots = this.getBoolean(parent_node + ".Headshot.Enable");
-            boolean bsEnable = this.getBoolean(parent_node + ".Backstab.Enable");
-            boolean critEnable = this.getBoolean(parent_node + ".Critical_Hits.Enable");
-            boolean fireEnable = this.getBoolean(parent_node + ".Shooting.Projectile_Incendiary.Enable");
-            int fireDuration = this.getInt(parent_node + ".Shooting.Projectile_Incendiary.Duration");
-            boolean zapEnable = this.getBoolean(parent_node + ".Lightning.Enable");
-            boolean resetHits = this.getBoolean(parent_node + ".Abilities.Reset_Hit_Cooldown");
-            boolean flightEnable = this.getBoolean(parent_node + ".Damage_Based_On_Flight_Time.Enable");
-            String makeSpeak = this.getString(parent_node + ".Extras.Make_Victim_Speak");
-            String makeRunCmd = this.getString(parent_node + ".Extras.Make_Victim_Run_Commmand");
-            String runConsole = this.getString(parent_node + ".Extras.Run_Console_Command");
-            int knockBack = this.getInt(parent_node + ".Abilities.Knockback");
-            String bonusDrops = this.getString(parent_node + ".Abilities.Bonus_Drops");
-            int activTime = this.getInt(parent_node + ".Explosions.Projectile_Activation_Time");
+            double projSpeed = (double) ConfigCache.getInt(parent_node + ".Shooting.Projectile_Speed") * 0.1;
+            boolean hitEnable = ConfigCache.getBoolean(parent_node + ".Hit_Events.Enable");
+            boolean headShots = ConfigCache.getBoolean(parent_node + ".Headshot.Enable");
+            boolean bsEnable = ConfigCache.getBoolean(parent_node + ".Backstab.Enable");
+            boolean critEnable = ConfigCache.getBoolean(parent_node + ".Critical_Hits.Enable");
+            boolean fireEnable = ConfigCache.getBoolean(parent_node + ".Shooting.Projectile_Incendiary.Enable");
+            int fireDuration = ConfigCache.getInt(parent_node + ".Shooting.Projectile_Incendiary.Duration");
+            boolean zapEnable = ConfigCache.getBoolean(parent_node + ".Lightning.Enable");
+            boolean resetHits = ConfigCache.getBoolean(parent_node + ".Abilities.Reset_Hit_Cooldown");
+            boolean flightEnable = ConfigCache.getBoolean(parent_node + ".Damage_Based_On_Flight_Time.Enable");
+            String makeSpeak = ConfigCache.getString(parent_node + ".Extras.Make_Victim_Speak");
+            String makeRunCmd = ConfigCache.getString(parent_node + ".Extras.Make_Victim_Run_Commmand");
+            String runConsole = ConfigCache.getString(parent_node + ".Extras.Run_Console_Command");
+            int knockBack = ConfigCache.getInt(parent_node + ".Abilities.Knockback");
+            String bonusDrops = ConfigCache.getString(parent_node + ".Abilities.Bonus_Drops");
+            int activTime = ConfigCache.getInt(parent_node + ".Explosions.Projectile_Activation_Time");
             int projFlight = 0;
-            double projTotalDmg = this.getInt(parent_node + ".Shooting.Projectile_Damage");
+            double projTotalDmg = ConfigCache.getInt(parent_node + ".Shooting.Projectile_Damage");
             boolean instantKill = this.csminion.shouldInstantKill(victim.getType(), parent_node);
             double exactKillDamage = 0.0D;
             boolean BS = false;
             boolean crit = false;
             boolean boomHS = false;
             if (flightEnable && !energyMode) {
-                int dmgPerTick = this.getInt(parent_node + ".Damage_Based_On_Flight_Time.Bonus_Damage_Per_Tick");
-                int flightMax = this.getInt(parent_node + ".Damage_Based_On_Flight_Time.Maximum_Damage");
-                int flightMin = this.getInt(parent_node + ".Damage_Based_On_Flight_Time.Minimum_Damage");
+                int dmgPerTick = ConfigCache.getInt(parent_node + ".Damage_Based_On_Flight_Time.Bonus_Damage_Per_Tick");
+                int flightMax = ConfigCache.getInt(parent_node + ".Damage_Based_On_Flight_Time.Maximum_Damage");
+                int flightMin = ConfigCache.getInt(parent_node + ".Damage_Based_On_Flight_Time.Minimum_Damage");
                 boolean negDmg = dmgPerTick < 0 && flightMax < 0;
                 projFlight = objProj.getTicksLived();
                 int tickDmgTotal = projFlight * dmgPerTick;
@@ -1146,7 +1000,7 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
 
             if (bsEnable) {
-                int bsBonusDmg = this.getInt(parent_node + ".Backstab.Bonus_Damage");
+                int bsBonusDmg = ConfigCache.getInt(parent_node + ".Backstab.Bonus_Damage");
                 double faceAngle = victim.getLocation().getDirection().dot(shooter.getLocation().getDirection());
                 if (faceAngle > (double) 0.0F) {
                     BS = true;
@@ -1155,8 +1009,8 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
 
             if (critEnable) {
-                int critBonus = this.getInt(parent_node + ".Critical_Hits.Bonus_Damage");
-                int critChance = this.getInt(parent_node + ".Critical_Hits.Chance");
+                int critBonus = ConfigCache.getInt(parent_node + ".Critical_Hits.Bonus_Damage");
+                int critChance = ConfigCache.getInt(parent_node + ".Critical_Hits.Chance");
                 Random ranGen = new Random();
                 int Chance = ranGen.nextInt(100);
                 if (Chance <= critChance) {
@@ -1167,7 +1021,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             if (headShots && !energyMode && this.csminion.isHesh(objProj, victim)) {
                 boomHS = true;
-                projTotalDmg += this.getInt(parent_node + ".Headshot.Bonus_Damage");
+                projTotalDmg += ConfigCache.getInt(parent_node + ".Headshot.Bonus_Damage");
             }
 
             projTotalDmg = this.csminion.getSuperDamage(victim.getType(), parent_node, projTotalDmg);
@@ -1216,14 +1070,14 @@ public class CSDirector extends JavaPlugin implements Listener {
                     victim.damage(weaponEvent.getDamage(), shooter);
                 }
 
-                this.applyAbilityKnockback(victim, shooter, parent_node, knockBack);
+                AmmoUtils.applyAbilityKnockback(victim, shooter, parent_node, knockBack);
 
                 if (energyMode || objProj.getTicksLived() >= activTime) {
                     this.projectileExplosion(victim, parent_node, false, shooter, false, false, null, null, false, 0);
                 }
 
                 if (zapEnable) {
-                    boolean zapNoDmg = this.getBoolean(parent_node + ".Lightning.No_Damage");
+                    boolean zapNoDmg = ConfigCache.getBoolean(parent_node + ".Lightning.No_Damage");
                     this.csminion.projectileLightning(victim.getLocation(), zapNoDmg);
                 }
 
@@ -1242,10 +1096,10 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
 
                 if (boomHS) {
-                    this.sendPlayerMessage(shooter, parent_node, ".Headshot.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.sendPlayerMessage(victim, parent_node, ".Headshot.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.playSoundEffects(shooter, parent_node, ".Headshot.Sounds_Shooter", false, null);
-                    this.playSoundEffects(victim, parent_node, ".Headshot.Sounds_Victim", false, null);
+                    CommandUtils.sendPlayerMessage(shooter, parent_node, ".Headshot.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Headshot.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
+                    SoundUtils.playSoundEffects(shooter, parent_node, ".Headshot.Sounds_Shooter", false, null);
+                    SoundUtils.playSoundEffects(victim, parent_node, ".Headshot.Sounds_Victim", false, null);
                     this.csminion.giveParticleEffects(victim, parent_node, ".Particles.Particle_Headshot", false, null);
                     this.csminion.displayFireworks(victim, parent_node, ".Fireworks.Firework_Headshot");
                     this.csminion.givePotionEffects(shooter, parent_node, ".Potion_Effects.Potion_Effect_Shooter", /*"head"*/PotionActivation.HEAD);
@@ -1253,10 +1107,10 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
 
                 if (crit) {
-                    this.sendPlayerMessage(shooter, parent_node, ".Critical_Hits.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.sendPlayerMessage(victim, parent_node, ".Critical_Hits.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.playSoundEffects(shooter, parent_node, ".Critical_Hits.Sounds_Shooter", false, null);
-                    this.playSoundEffects(victim, parent_node, ".Critical_Hits.Sounds_Victim", false, null);
+                    CommandUtils.sendPlayerMessage(shooter, parent_node, ".Critical_Hits.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Critical_Hits.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
+                    SoundUtils.playSoundEffects(shooter, parent_node, ".Critical_Hits.Sounds_Shooter", false, null);
+                    SoundUtils.playSoundEffects(victim, parent_node, ".Critical_Hits.Sounds_Victim", false, null);
                     this.csminion.giveParticleEffects(victim, parent_node, ".Particles.Particle_Critical", false, null);
                     this.csminion.displayFireworks(victim, parent_node, ".Fireworks.Firework_Critical");
                     this.csminion.givePotionEffects(shooter, parent_node, ".Potion_Effects.Potion_Effect_Shooter", /*"crit"*/PotionActivation.CRIT);
@@ -1264,10 +1118,10 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
 
                 if (BS) {
-                    this.sendPlayerMessage(shooter, parent_node, ".Backstab.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.sendPlayerMessage(victim, parent_node, ".Backstab.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.playSoundEffects(shooter, parent_node, ".Backstab.Sounds_Shooter", false, null);
-                    this.playSoundEffects(victim, parent_node, ".Backstab.Sounds_Victim", false, null);
+                    CommandUtils.sendPlayerMessage(shooter, parent_node, ".Backstab.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Backstab.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
+                    SoundUtils.playSoundEffects(shooter, parent_node, ".Backstab.Sounds_Shooter", false, null);
+                    SoundUtils.playSoundEffects(victim, parent_node, ".Backstab.Sounds_Victim", false, null);
                     this.csminion.giveParticleEffects(victim, parent_node, ".Particles.Particle_Backstab", false, null);
                     this.csminion.displayFireworks(victim, parent_node, ".Fireworks.Firework_Backstab");
                     this.csminion.givePotionEffects(shooter, parent_node, ".Potion_Effects.Potion_Effect_Shooter", /*"back"*/PotionActivation.BACK);
@@ -1275,10 +1129,10 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
 
                 if (hitEnable) {
-                    this.sendPlayerMessage(shooter, parent_node, ".Hit_Events.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.sendPlayerMessage(victim, parent_node, ".Hit_Events.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.playSoundEffects(shooter, parent_node, ".Hit_Events.Sounds_Shooter", false, null);
-                    this.playSoundEffects(victim, parent_node, ".Hit_Events.Sounds_Victim", false, null);
+                    CommandUtils.sendPlayerMessage(shooter, parent_node, ".Hit_Events.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Hit_Events.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
+                    SoundUtils.playSoundEffects(shooter, parent_node, ".Hit_Events.Sounds_Shooter", false, null);
+                    SoundUtils.playSoundEffects(victim, parent_node, ".Hit_Events.Sounds_Victim", false, null);
                 }
 
                 this.csminion.giveParticleEffects(victim, parent_node, ".Particles.Particle_Impact_Anything", false, null);
@@ -1287,22 +1141,22 @@ public class CSDirector extends JavaPlugin implements Listener {
                 this.csminion.givePotionEffects(shooter, parent_node, ".Potion_Effects.Potion_Effect_Shooter", /*"hit"*/PotionActivation.HIT);
                 this.csminion.givePotionEffects(victim, parent_node, ".Potion_Effects.Potion_Effect_Victim", /*"hit"*/PotionActivation.HIT);
                 if (this.spawnEntities(victim, parent_node, ".Spawn_Entity_On_Hit.EntityType_Baby_Explode_Amount", shooter)) {
-                    this.sendPlayerMessage(shooter, parent_node, ".Spawn_Entity_On_Hit.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
-                    this.sendPlayerMessage(victim, parent_node, ".Spawn_Entity_On_Hit.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(shooter, parent_node, ".Spawn_Entity_On_Hit.Message_Shooter", nameShooter, nameVic, flyTime, dmgTotal);
+                    CommandUtils.sendPlayerMessage(victim, parent_node, ".Spawn_Entity_On_Hit.Message_Victim", nameShooter, nameVic, flyTime, dmgTotal);
                 }
 
                 if (victim instanceof Player) {
                     if (makeSpeak != null) {
-                        ((Player) victim).chat(this.variableParser(makeSpeak, nameShooter, nameVic, flyTime, dmgTotal));
+                        ((Player) victim).chat(CommandUtils.variableParser(makeSpeak, nameShooter, nameVic, flyTime, dmgTotal));
                     }
 
                     if (makeRunCmd != null) {
-                        this.executeCommands(victim, parent_node, ".Extras.Make_Victim_Run_Commmand", nameShooter, nameVic, flyTime, dmgTotal, false);
+                        CommandUtils.executeCommands(victim, parent_node, ".Extras.Make_Victim_Run_Commmand", nameShooter, nameVic, flyTime, dmgTotal, false);
                     }
                 }
 
                 if (runConsole != null) {
-                    this.executeCommands(shooter, parent_node, ".Extras.Run_Console_Command", nameShooter, nameVic, flyTime, dmgTotal, true);
+                    CommandUtils.executeCommands(shooter, parent_node, ".Extras.Run_Console_Command", nameShooter, nameVic, flyTime, dmgTotal, true);
                 }
 
                 if (!(victim instanceof Player) && victim.getHealth() <= (double) 0.0F && bonusDrops != null) {
@@ -1349,19 +1203,19 @@ public class CSDirector extends JavaPlugin implements Listener {
             Location destLoc = objProj.getLocation();
             objProj.removeMetadata(parentNode, this);
             boolean collided = event.getEntity().hasMetadata("Collided");
-            boolean terrain = this.getBoolean(parentNode + ".Particles.Particle_Terrain");
-            boolean airstrike = this.getBoolean(parentNode + ".Airstrikes.Enable");
-            boolean zapEnable = this.getBoolean(parentNode + ".Lightning.Enable");
-            boolean zapNoDam = this.getBoolean(parentNode + ".Lightning.No_Damage");
-            boolean zapImpact = this.getBoolean(parentNode + ".Lightning.On_Impact_With_Anything");
-            boolean arrowImpact = this.getBoolean(parentNode + ".Shooting.Remove_Arrows_On_Impact");
-            boolean explodeImpact = this.getBoolean(parentNode + ".Explosions.On_Impact_With_Anything");
-            int actTime = this.getInt(parentNode + ".Explosions.Projectile_Activation_Time");
-            String breakBlocks = this.getString(parentNode + ".Abilities.Break_Blocks");
+            boolean terrain = ConfigCache.getBoolean(parentNode + ".Particles.Particle_Terrain");
+            boolean airstrike = ConfigCache.getBoolean(parentNode + ".Airstrikes.Enable");
+            boolean zapEnable = ConfigCache.getBoolean(parentNode + ".Lightning.Enable");
+            boolean zapNoDam = ConfigCache.getBoolean(parentNode + ".Lightning.No_Damage");
+            boolean zapImpact = ConfigCache.getBoolean(parentNode + ".Lightning.On_Impact_With_Anything");
+            boolean arrowImpact = ConfigCache.getBoolean(parentNode + ".Shooting.Remove_Arrows_On_Impact");
+            boolean explodeImpact = ConfigCache.getBoolean(parentNode + ".Explosions.On_Impact_With_Anything");
+            int actTime = ConfigCache.getInt(parentNode + ".Explosions.Projectile_Activation_Time");
+            String breakBlocks = ConfigCache.getString(parentNode + ".Abilities.Break_Blocks");
             String[] blockList = breakBlocks == null ? null : breakBlocks.split("-");
             Block hitBlock = objProj.getLocation().getBlock();
             if (!collided) {
-                double projSpeed = (double) this.getInt(parentNode + ".Shooting.Projectile_Speed") * 0.1;
+                double projSpeed = (double) ConfigCache.getInt(parentNode + ".Shooting.Projectile_Speed") * 0.1;
                 if (projSpeed > (double) 256.0F) {
                     projSpeed = 256.0F;
                 }
@@ -1372,7 +1226,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                     direction.multiply(i);
                     finalLoc.add(direction);
                     hitBlock = finalLoc.getBlock();
-                    if (!this.isAir(hitBlock.getType())) {
+                    if (!WeaponHelperUtils.isAir(hitBlock.getType())) {
                         if (terrain) {
                             objProj.getWorld().playEffect(finalLoc, Effect.STEP_SOUND, hitBlock.getType());
                         }
@@ -1433,7 +1287,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                 this.csminion.giveParticleEffects(null, parentNode, ".Particles.Particle_Impact_Anything", false, destLoc);
             }
 
-            this.playSoundEffects((Entity) null, parentNode, ".Hit_Events.Sounds_Impact", false, destLoc);
+            SoundUtils.playSoundEffects((Entity) null, parentNode, ".Hit_Events.Sounds_Impact", false, destLoc);
             this.csminion.giveParticleEffects(null, parentNode, ".Airstrikes.Particle_Call_Airstrike", false, destLoc);
             if (airstrike) {
                 this.csminion.callAirstrike(event.getEntity(), parentNode, shooter);
@@ -1456,7 +1310,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         if (boomer instanceof TNTPrimed) {
             if (boomer.hasMetadata("CS_potex")) {
                 String parent_node = boomer.getMetadata("CS_potex").get(0).asString();
-                this.playSoundEffects(boomer, parent_node, ".Explosions.Sounds_Explode", false, null);
+                SoundUtils.playSoundEffects(boomer, parent_node, ".Explosions.Sounds_Explode", false, null);
             }
 
             if (boomer.hasMetadata("nullify") && event.blockList() != null) {
@@ -1482,7 +1336,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         } else if ((boomer instanceof WitherSkull || boomer instanceof LargeFireball) && boomer.hasMetadata("projParentNode") && ((Projectile) boomer).getShooter() instanceof Player) {
             Player shooter = (Player) ((Projectile) boomer).getShooter();
             String parent_node = boomer.getMetadata("projParentNode").get(0).asString();
-            if (boomer.getTicksLived() >= this.getInt(parent_node + ".Explosions.Projectile_Activation_Time")) {
+            if (boomer.getTicksLived() >= ConfigCache.getInt(parent_node + ".Explosions.Projectile_Activation_Time")) {
                 this.projectileExplosion(boomer, parent_node, false, shooter, false, false, null, null, false, 0);
             }
 
@@ -1491,629 +1345,31 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     }
 
-    // Обёртка над playSoundEffects для случаев, где громкость надо масштабировать внешним коэффициентом.
-    public void playSoundEffectsScaled(final Entity player, String parentNode, String childNode, boolean reload, double scale, String... customSounds) {
-       /* String soundList = customSounds.length == 0 ? this.getString(parentNode + childNode) : customSounds[0];
-        if (soundList != null) {
-            for (String soundStrip : soundList.replaceAll(" ", "").split(",")) {
-                String[] soundInfo = soundStrip.split("-");
-                if (soundInfo.length != 4) {
-                    this.printM("'" + soundStrip + "' of weapon '" + parentNode + "' has an invalid format! The correct format is: Sound-Volume-Pitch-Delay!");
-                } else {
-                    try {
-                        final Sound sound = SoundManager.get(soundInfo[0].toUpperCase());
-                        final float volume = Float.parseFloat(soundInfo[1]);
-                        final float pitch = Float.parseFloat(soundInfo[2]);
-                        long delay = (long) ((double) Long.parseLong(soundInfo[3]) * scale);
-                        int taskID = Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
-                            public void run() {
-                                player.getWorld().playSound(player.getLocation(), sound, volume, pitch);
-                            }
-                        }, delay);
-                        if (reload) {
-                            String playerName = player.getName();
-                            Collection<Integer> taskIDs = this.global_reload_IDs.get(playerName);
-                            if (taskIDs == null) {
-                                taskIDs = new ArrayList<>();
-                                this.global_reload_IDs.put(playerName, taskIDs);
-                            }
 
-                            taskIDs.add(taskID);
-                        }
-                    } catch (IllegalArgumentException var22) {
-                        this.printM("'" + soundStrip + "' of weapon '" + parentNode + "' contains either an invalid number or sound!");
-                    }
-                }
-            }
 
-        }*/
-
-        String soundList = customSounds.length == 0
-                ? getString(parentNode + childNode)
-                : customSounds[0];
-
-        soundEffectManager.playSounds(
-                player,
-                null,
-                soundList,
-                reload,
-                scale,
-                parentNode
-        );
-    }
-
-    // Единая точка воспроизведения звуков оружия, перезарядки и взрывов с поддержкой legacy-алиасов.
-//    public void playSoundEffects(final Entity player, String parentNode, String childNode, boolean reload, final Location givenCoord, String... customSounds) {
-//        String soundList = customSounds.length == 0 ? this.getString(parentNode + childNode) : customSounds[0];
-//        if (soundList != null) {
-//            for (String soundStrip : soundList.replaceAll(" ", "").split(",")) {
-//                String[] soundInfo = soundStrip.split("-");
-//                if (soundInfo.length != 4) {
-//                    this.printM("'" + soundStrip + "' of weapon '" + parentNode + "' has an invalid format! The correct format is: Sound-Volume-Pitch-Delay!");
-//                } else {
-//                    try {
-//                        final Sound sound = SoundManager.get(soundInfo[0].toUpperCase());
-//                        final float volume = Float.parseFloat(soundInfo[1]);
-//                        final float pitch = Float.parseFloat(soundInfo[2]);
-//                        long delay = Long.parseLong(soundInfo[3]);
-//                        int taskID = Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
-//                            public void run() {
-//                                if (player == null) {
-//                                    givenCoord.getWorld().playSound(givenCoord, sound, volume, pitch);
-//                                } else {
-//                                    player.getWorld().playSound(player.getLocation(), sound, volume, pitch);
-//                                }
-//
-//                            }
-//                        }, delay);
-//                        if (reload) {
-//                            String playerName = player.getName();
-//                            Collection<Integer> taskIDs = this.global_reload_IDs.get(playerName);
-//                            if (taskIDs == null) {
-//                                taskIDs = new ArrayList<>();
-//                                this.global_reload_IDs.put(playerName, taskIDs);
-//                            }
-//
-//                            taskIDs.add(taskID);
-//                        }
-//                    } catch (IllegalArgumentException var21) {
-//                        this.printM("'" + soundStrip + "' of weapon '" + parentNode + "' contains either an invalid number or sound!");
-//                    }
-//                }
-//            }
-//
-//        }
-//    }
-    public void playSoundEffects(final Entity player,
-                                 String parentNode,
-                                 String childNode,
-                                 boolean reload,
-                                 final Location givenCoord,
-                                 String... customSounds) {
-
-        String soundList = customSounds.length == 0
-                ? getString(parentNode + childNode)
-                : customSounds[0];
-
-        if (soundList == null || soundList.isEmpty()) {
-            return;
-        }
-
-        soundEffectManager.playSounds(
-                player,
-                givenCoord,
-                soundList,
-                reload
-        );
-    }
-
-    //    public void fireProjectile(final Player player, final String parentNode, final boolean leftClick) {
-//        int gunSlot = player.getInventory().getHeldItemSlot();
-//        int shootDelay = this.getInt(parentNode + ".Shooting.Delay_Between_Shots");
-//        final int projAmount = this.getInt(parentNode + ".Shooting.Projectile_Amount");
-//        final boolean ammoEnable = this.getBoolean(parentNode + ".Ammo.Enable");
-//        final boolean oneTime = this.getBoolean(parentNode + ".Extras.One_Time_Use");
-//        String deviceType = this.getString(parentNode + ".Explosive_Devices.Device_Type");
-//        final String proType = this.getString(parentNode + ".Shooting.Projectile_Type");
-//        ItemStack item = player.getInventory().getItemInHand();
-//        final boolean isFullyAuto = this.getBoolean(parentNode + ".Fully_Automatic.Enable");
-//        int fireRate = this.getInt(parentNode + ".Fully_Automatic.Fire_Rate");
-//        boolean burstEnable = this.getBoolean(parentNode + ".Burstfire.Enable");
-//        int burstShots = this.getInt(parentNode + ".Burstfire.Shots_Per_Burst");
-//        int burstDelay = this.getInt(parentNode + ".Burstfire.Delay_Between_Shots_In_Burst");
-//        boolean meleeMode = this.getBoolean(parentNode + ".Item_Information.Melee_Mode");
-//        boolean shootDisable = this.getBoolean(parentNode + ".Shooting.Disable");
-//        final boolean reloadOn = this.getBoolean(parentNode + ".Reload.Enable");
-//        final boolean dualWield = this.isDualWield(player, parentNode, item);
-//        if (!shootDisable && !meleeMode) {
-//            Vector shiftVector = this.determinePosition(player, dualWield, leftClick);
-//            final Location projLoc = player.getEyeLocation().toVector().add(shiftVector.multiply(0.2)).toLocation(player.getWorld());
-//            final String actType = this.getString(parentNode + ".Firearm_Action.Type");
-//            final boolean tweakyAction = actType != null && (actType.toLowerCase().contains("bolt") || actType.toLowerCase().contains("lever") || actType.toLowerCase().contains("pump"));
-//            if (!player.hasMetadata(parentNode + "shootDelay" + gunSlot + leftClick)) {
-//                if (!player.hasMetadata(parentNode + "noShooting" + gunSlot)) {
-//                    if (!player.hasMetadata("togglesnoShooting" + gunSlot)) {
-//                        if (oneTime && ammoEnable) {
-//                            player.sendMessage(this.heading + "For '" + parentNode + "' - the 'One_Time_Use' node is incompatible with weapons using the Ammo module.");
-//                        } else if (proType != null && (proType.equalsIgnoreCase("grenade") || proType.equalsIgnoreCase("flare")) && projAmount == 0) {
-//                            player.sendMessage(this.heading + "The weapon '" + parentNode + "' is missing a value for 'Projectile_Amount'.");
-//                        } else {
-//                            if (isFullyAuto) {
-//                                if (burstEnable) {
-//                                    player.sendMessage(this.heading + "The weapon '" + parentNode + "' is using Fully_Automatic and Burstfire at the same time. Pick one; you cannot enable both!");
-//                                    return;
-//                                }
-//
-//                                if (shootDelay > 1) {
-//                                    player.sendMessage(this.heading + "For '" + parentNode + "' - the Fully_Automatic module can only be used if 'Delay_Between_Shots' is removed or set to a value no greater than 1.");
-//                                    return;
-//                                }
-//
-//                                if (fireRate <= 0 || fireRate > 16) {
-//                                    player.sendMessage(this.heading + "The weapon '" + parentNode + "' has an invalid value for 'Fire_Rate'. The accepted values are 1 to 16.");
-//                                    return;
-//                                }
-//                            }
-//
-//                            if (this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("ᴿ")) {
-//                                if (this.getAmmoBetweenBrackets(player, parentNode, item) <= 0) {
-//                                    this.reloadAnimation(player, parentNode);
-//                                    return;
-//                                }
-//
-//                                if (!dualWield) {
-//                                    this.terminateReload(player);
-//                                    this.removeInertReloadTag(player, 0, true);
-//                                } else {
-//                                    int[] ammoReading = this.grabDualAmmo(item, parentNode);
-//                                    if (ammoReading[0] > 0 && leftClick || ammoReading[1] > 0 && !leftClick) {
-//                                        this.terminateReload(player);
-//                                        this.removeInertReloadTag(player, 0, true);
-//                                    }
-//                                }
-//                            }
-//
-//                            if (!player.hasMetadata(parentNode + "reloadShootDelay" + gunSlot)) {
-//                                if (!tweakyAction && (actType == null || !actType.equalsIgnoreCase("slide") || !item.getItemMeta().getDisplayName().contains("▫"))) {
-//                                    player.setMetadata(parentNode + "shootDelay" + gunSlot + leftClick, new FixedMetadataValue(this, true));
-//                                    this.csminion.tempVars(player, parentNode + "shootDelay" + gunSlot + leftClick, (long)shootDelay);
-//                                }
-//
-//                                final String ammoInfo = this.getString(parentNode + ".Ammo.Ammo_Item_ID");
-//                                final boolean ammoPerShot = this.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
-//                                final double zoomAcc = this.getDouble(parentNode + ".Scope.Zoom_Bullet_Spread");
-//                                final boolean sneakOn = this.getBoolean(parentNode + ".Sneak.Enable");
-//                                boolean sneakToShoot = this.getBoolean(parentNode + ".Sneak.Sneak_Before_Shooting");
-//                                final boolean sneakNoRec = this.getBoolean(parentNode + ".Sneak.No_Recoil");
-//                                final double sneakAcc = this.getDouble(parentNode + ".Sneak.Bullet_Spread");
-//                                final boolean exploDevs = this.getBoolean(parentNode + ".Explosive_Devices.Enable");
-//                                boolean takeAmmo = this.getBoolean(parentNode + ".Reload.Take_Ammo_On_Reload");
-//                                String dragRemInfo = this.getString(parentNode + ".Shooting.Removal_Or_Drag_Delay");
-//                                final String[] dragRem = dragRemInfo == null ? null : dragRemInfo.split("-");
-//                                if (dragRem != null) {
-//                                    try {
-//                                        Integer.valueOf(dragRem[0]);
-//                                    } catch (NumberFormatException var51) {
-//                                        player.sendMessage(this.heading + "For the weapon '" + parentNode + "', the 'Removal_Or_Drag_Delay' node is incorrectly configured.");
-//                                        return;
-//                                    }
-//                                }
-//
-//                                if (this.getBoolean(parentNode + ".Ammo.Take_Ammo_On_Reload")) {
-//                                    player.sendMessage(this.heading + "For the weapon '" + parentNode + "', the Ammo module does not support the 'Take_Ammo_On_Reload' node. Did you mean to place it in the Reload module?");
-//                                } else {
-//                                    if (ammoEnable) {
-//                                        if (!takeAmmo && !ammoPerShot) {
-//                                            player.sendMessage(this.heading + "The weapon '" + parentNode + "' has enabled the Ammo module, but at least one of the following nodes need to be set to true: Take_Ammo_On_Reload, Take_Ammo_Per_Shot.");
-//                                            return;
-//                                        }
-//
-//                                        if (!this.csminion.containsItemStack(player, ammoInfo, 1, parentNode)) {
-//                                            boolean isPumpOrBolt = actType != null && !actType.equalsIgnoreCase("pump") && !actType.equalsIgnoreCase("bolt");
-//                                            boolean hasLoadedChamber = item.getItemMeta().getDisplayName().contains("▪ «");
-//                                            if (ammoPerShot || takeAmmo && this.getAmmoBetweenBrackets(player, parentNode, item) == 0 && (isPumpOrBolt || !hasLoadedChamber)) {
-//                                                this.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location)null);
-//                                                return;
-//                                            }
-//                                        }
-//                                    }
-//
-//                                    if (!sneakToShoot || player.isSneaking() && !this.isAir(player.getLocation().getBlock().getRelative(BlockFace.DOWN).getType())) {
-//                                        if (!this.checkBoltPosition(player, parentNode)) {
-//                                            if (!burstEnable) {
-//                                                burstShots = 1;
-//                                            }
-//
-//                                            if (isFullyAuto) {
-//                                                burstShots = 5;
-//                                                burstDelay = 1;
-//                                            }
-//
-//                                            final double projSpeed = (double)this.getInt(parentNode + ".Shooting.Projectile_Speed") * 0.1;
-//                                            final boolean setOnFire = this.getBoolean(parentNode + ".Shooting.Projectile_Flames");
-//                                            final boolean noBulletDrop = this.getBoolean(parentNode + ".Shooting.Remove_Bullet_Drop");
-//                                            if (!this.getBoolean(parentNode + ".Scope.Zoom_Before_Shooting") || player.hasMetadata("ironsights")) {
-//                                                int shootReloadBuffer = this.getInt(parentNode + ".Reload.Shoot_Reload_Buffer");
-//                                                if (shootReloadBuffer > 0) {
-//                                                    Map<Integer, Long> lastShot = this.last_shot_list.get(player.getName());
-//                                                    if (lastShot == null) {
-//                                                        lastShot = new HashMap<>();
-//                                                        this.last_shot_list.put(player.getName(), lastShot);
-//                                                    }
-//
-//                                                    lastShot.put(gunSlot, System.currentTimeMillis());
-//                                                }
-//
-//                                                int burstStart = 0;
-//                                                if (isFullyAuto) {
-//                                                    WeaponFireRateEvent event = new WeaponFireRateEvent(player, parentNode, item, fireRate);
-//                                                    this.getServer().getPluginManager().callEvent(event);
-//                                                    fireRate = event.getFireRate();
-//                                                    String playerName = player.getName();
-//                                                    if (!this.rpm_ticks.containsKey(playerName)) {
-//                                                        this.rpm_ticks.put(playerName, 1);
-//                                                    }
-//
-//                                                    if (!this.rpm_shots.containsKey(playerName)) {
-//                                                        this.rpm_shots.put(playerName, 0);
-//                                                    }
-//
-//                                                    burstStart = (Integer)this.rpm_shots.get(playerName);
-//                                                    this.rpm_shots.put(playerName, 5);
-//                                                }
-//
-//                                                final int fireRateFinal = fireRate;
-//                                                final int itemSlot = player.getInventory().getHeldItemSlot();
-//
-//                                                for(int burst = burstStart; burst < burstShots; ++burst) {
-//                                                    final boolean isLastShot = burst >= burstShots - 1;
-//                                                    int task_ID = Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
-//                                                        public void run() {
-//                                                            if (isFullyAuto) {
-//                                                                String playerName = player.getName();
-//                                                                int shotsLeft = (Integer)CSDirector.this.rpm_shots.get(playerName) - 1;
-//                                                                CSDirector.this.rpm_shots.put(playerName, shotsLeft);
-//                                                                int tick = (Integer)CSDirector.this.rpm_ticks.get(playerName);
-//                                                                CSDirector.this.rpm_ticks.put(playerName, tick >= 20 ? 1 : tick + 1);
-//                                                                if (shotsLeft == 0) {
-//                                                                    CSDirector.this.burst_task_IDs.remove(playerName);
-//                                                                }
-//
-//                                                                if (!CSDirector.this.isValid(tick, fireRateFinal)) {
-//                                                                    return;
-//                                                                }
-//                                                            } else if (isLastShot) {
-//                                                                CSDirector.this.burst_task_IDs.remove(player.getName());
-//                                                            }
-//
-//                                                            ItemStack item = player.getInventory().getItemInHand();
-//                                                            if (!oneTime) {
-//                                                                if (CSDirector.this.switchedTheItem(player, parentNode) || itemSlot != player.getInventory().getHeldItemSlot()) {
-//                                                                    CSDirector.this.unscopePlayer(player);
-//                                                                    CSDirector.this.terminateAllBursts(player);
-//                                                                    return;
-//                                                                }
-//
-//                                                                boolean normalAction = false;
-//                                                                if (actType == null) {
-//                                                                    normalAction = true;
-//                                                                    String attachType = CSDirector.this.getAttachment(parentNode, item)[0];
-//                                                                    String filter = item.getItemMeta().getDisplayName();
-//                                                                    if (attachType == null || !attachType.equalsIgnoreCase("accessory")) {
-//                                                                        if (filter.contains("▪ «")) {
-//                                                                            CSDirector.this.csminion.setItemName(item, filter.replaceAll("▪ «", "«"));
-//                                                                        } else if (filter.contains("▫ «")) {
-//                                                                            CSDirector.this.csminion.setItemName(item, filter.replaceAll("▫ «", "«"));
-//                                                                        } else if (filter.contains("˗ «")) {
-//                                                                            CSDirector.this.csminion.setItemName(item, filter.replaceAll("˗ «", "«"));
-//                                                                        }
-//                                                                    }
-//                                                                } else if (!tweakyAction) {
-//                                                                    normalAction = true;
-//                                                                }
-//
-//                                                                if (ammoEnable && ammoPerShot && !CSDirector.this.csminion.containsItemStack(player, ammoInfo, 1, parentNode)) {
-//                                                                    CSDirector.this.burst_task_IDs.remove(player.getName());
-//                                                                    return;
-//                                                                }
-//
-//                                                                if (reloadOn) {
-//                                                                    if (item.getItemMeta().getDisplayName().contains("ᴿ")) {
-//                                                                        return;
-//                                                                    }
-//
-//                                                                    int detectedAmmo = CSDirector.this.getAmmoBetweenBrackets(player, parentNode, item);
-//                                                                    if (normalAction) {
-//                                                                        if (detectedAmmo <= 0) {
-//                                                                            CSDirector.this.reloadAnimation(player, parentNode);
-//                                                                            return;
-//                                                                        }
-//
-//                                                                        if (!dualWield) {
-//                                                                            CSDirector.this.ammoOperation(player, parentNode, detectedAmmo, item);
-//                                                                        } else if (!CSDirector.this.ammoSpecOps(player, parentNode, detectedAmmo, item, leftClick)) {
-//                                                                            return;
-//                                                                        }
-//                                                                    }
-//                                                                } else {
-//                                                                    String itemName = item.getItemMeta().getDisplayName();
-//                                                                    if (itemName.contains("«") && !itemName.contains(String.valueOf('×')) && !exploDevs) {
-//                                                                        CSDirector.this.csminion.replaceBrackets(item, String.valueOf('×'), parentNode);
-//                                                                    }
-//                                                                }
-//                                                            }
-//
-//                                                            double bulletSpread = CSDirector.this.getDouble(parentNode + ".Shooting.Bullet_Spread");
-//                                                            if (player.isSneaking() && sneakOn) {
-//                                                                bulletSpread = sneakAcc;
-//                                                            }
-//
-//                                                            if (player.hasMetadata("ironsights")) {
-//                                                                bulletSpread = zoomAcc;
-//                                                            }
-//
-//                                                            if (bulletSpread == (double)0.0F) {
-//                                                                bulletSpread = 0.1;
-//                                                            }
-//
-//                                                            boolean noVertRecoil = CSDirector.this.getBoolean(parentNode + ".Abilities.No_Vertical_Recoil");
-//                                                            boolean jetPack = CSDirector.this.getBoolean(parentNode + ".Abilities.Jetpack_Mode");
-//                                                            double recoilAmount = (double)CSDirector.this.getInt(parentNode + ".Shooting.Recoil_Amount") * 0.1;
-//                                                            if (recoilAmount != (double)0.0F && (!sneakOn || !sneakNoRec || !player.isSneaking())) {
-//                                                                if (!jetPack) {
-//                                                                    Vector velToAdd = player.getLocation().getDirection().multiply(-recoilAmount);
-//                                                                    if (noVertRecoil) {
-//                                                                        velToAdd.multiply(new Vector(1, 0, 1));
-//                                                                    }
-//
-//                                                                    player.setVelocity(velToAdd);
-//                                                                } else {
-//                                                                    player.setVelocity(new Vector((double)0.0F, recoilAmount, (double)0.0F));
-//                                                                }
-//                                                            }
-//
-//                                                            boolean clearFall = CSDirector.this.getBoolean(parentNode + ".Shooting.Reset_Fall_Distance");
-//                                                            if (clearFall) {
-//                                                                player.setFallDistance(0.0F);
-//                                                            }
-//
-//                                                            CSDirector.this.csminion.giveParticleEffects(player, parentNode, ".Particles.Particle_Player_Shoot", true, (Location)null);
-//                                                            CSDirector.this.csminion.givePotionEffects(player, parentNode, ".Potion_Effects.Potion_Effect_Shooter", "shoot");
-//                                                            CSDirector.this.csminion.displayFireworks(player, parentNode, ".Fireworks.Firework_Player_Shoot");
-//                                                            CSDirector.this.csminion.runCommand(player, parentNode);
-//                                                            if (CSDirector.this.getBoolean(parentNode + ".Abilities.Hurt_Effect")) {
-//                                                                player.playEffect(EntityEffect.HURT);
-//                                                            }
-//
-//                                                            String projectile_type = CSDirector.this.getString(parentNode + ".Shooting.Projectile_Type");
-//                                                            int timer = CSDirector.this.getInt(parentNode + ".Explosions.Explosion_Delay");
-//                                                            boolean airstrike = CSDirector.this.getBoolean(parentNode + ".Airstrikes.Enable");
-//                                                            if (airstrike) {
-//                                                                timer = CSDirector.this.getInt(parentNode + ".Airstrikes.Flare_Activation_Delay");
-//                                                            }
-//
-//                                                            String soundsShoot = CSDirector.this.getString(parentNode + ".Shooting.Sounds_Shoot");
-//                                                            WeaponPreShootEvent event = new WeaponPreShootEvent(player, parentNode, soundsShoot, bulletSpread, leftClick);
-//                                                            CSDirector.this.plugin.getServer().getPluginManager().callEvent(event);
-//                                                            CSDirector.this.playSoundEffects(player, parentNode, (String)null, false, (Location)null, event.getSounds());
-//                                                            if (!event.isCancelled()) {
-//                                                                bulletSpread = event.getBulletSpread();
-//
-//                                                                for(int i = 0; i < projAmount; ++i) {
-//                                                                    Random r = new Random();
-//                                                                    double yaw = Math.toRadians((double)(-player.getLocation().getYaw() - 90.0F));
-//                                                                    double pitch = Math.toRadians((double)(-player.getLocation().getPitch()));
-//                                                                    double[] spread = new double[]{(double)1.0F, (double)1.0F, (double)1.0F};
-//
-//                                                                    for(int t = 0; t < 3; ++t) {
-//                                                                        spread[t] = (r.nextDouble() - r.nextDouble()) * bulletSpread * 0.1;
-//                                                                    }
-//
-//                                                                    double x = Math.cos(pitch) * Math.cos(yaw) + spread[0];
-//                                                                    double y = Math.sin(pitch) + spread[1];
-//                                                                    double z = -Math.sin(yaw) * Math.cos(pitch) + spread[2];
-//                                                                    Vector dirVel = new Vector(x, y, z);
-//                                                                    if (proType == null || !proType.equalsIgnoreCase("grenade") && !proType.equalsIgnoreCase("flare")) {
-//                                                                        if (proType.equalsIgnoreCase("energy")) {
-//                                                                            PermissionAttachment attachment = player.addAttachment(CSDirector.this.plugin);
-//                                                                            attachment.setPermission("nocheatplus", true);
-//                                                                            attachment.setPermission("anticheat.check.exempt", true);
-//                                                                            String proOre = CSDirector.this.getString(parentNode + ".Shooting.Projectile_Subtype");
-//                                                                            if (proOre == null) {
-//                                                                                player.sendMessage(CSDirector.this.heading + "The weapon '" + parentNode + "' does not have a value for 'Projectile_Subtype'.");
-//                                                                                return;
-//                                                                            }
-//
-//                                                                            String[] proInfo = proOre.split("-");
-//                                                                            if (proInfo.length != 4) {
-//                                                                                player.sendMessage(CSDirector.this.heading + "The value provided for 'Projectile_Subtype' of the weapon '" + parentNode + "' has an incorrect format.");
-//                                                                                return;
-//                                                                            }
-//
-//                                                                            int wallLimit = 0;
-//                                                                            int hitCount = 0;
-//                                                                            int wallCount = 0;
-//
-//                                                                            int range;
-//                                                                            int hitLimit;
-//                                                                            double radius;
-//                                                                            try {
-//                                                                                range = Integer.valueOf(proInfo[0]);
-//                                                                                hitLimit = Integer.valueOf(proInfo[3]);
-//                                                                                if (proInfo[2].equalsIgnoreCase("all")) {
-//                                                                                    wallLimit = -1;
-//                                                                                } else if (!proInfo[2].equalsIgnoreCase("none")) {
-//                                                                                    wallLimit = Integer.valueOf(proInfo[2]);
-//                                                                                }
-//
-//                                                                                radius = Double.parseDouble(proInfo[1]);
-//                                                                            } catch (NumberFormatException var50) {
-//                                                                                player.sendMessage(CSDirector.this.heading + "The value provided for 'Projectile_Subtype' of the weapon '" + parentNode + "' contains an invalid number.");
-//                                                                                return;
-//                                                                            }
-//
-//                                                                            Set<Block> hitBlocks = new HashSet<>();
-//                                                                            Set<Integer> hitMobs = new HashSet<>();
-//                                                                            Vector vecShift = dirVel.normalize().multiply(radius);
-//                                                                            Location locStart = player.getEyeLocation();
-//
-//                                                                            label238:
-//                                                                            for(double k = 0.0F; k < (double)range; k += radius) {
-//                                                                                locStart.add(vecShift);
-//                                                                                Block hitBlock = locStart.getBlock();
-//                                                                                if (!CSDirector.this.isAir(hitBlock.getType())) {
-//                                                                                    if (wallLimit != -1 && !hitBlocks.contains(hitBlock)) {
-//                                                                                        ++wallCount;
-//                                                                                        if (wallCount > wallLimit) {
-//                                                                                            break;
-//                                                                                        }
-//
-//                                                                                        hitBlocks.add(hitBlock);
-//                                                                                    }
-//                                                                                } else {
-//                                                                                    FallingBlock tempEnt = player.getWorld().spawnFallingBlock(locStart, Material.AIR, (byte)0);
-//
-//                                                                                    for(Entity ent : tempEnt.getNearbyEntities(radius, radius, radius)) {
-//                                                                                        if (ent instanceof LivingEntity && ent != player && !hitMobs.contains(ent.getEntityId()) && !ent.isDead()) {
-//                                                                                            if (ent instanceof Player) {
-//                                                                                                ent.setMetadata("CS_Energy", new FixedMetadataValue(CSDirector.this.plugin, parentNode));
-//                                                                                                ((LivingEntity)ent).damage(0.0F, player);
-//                                                                                            } else {
-//                                                                                                CSDirector.this.dealDamage(player, (LivingEntity)ent, null, parentNode);
-//                                                                                            }
-//
-//                                                                                            hitMobs.add(ent.getEntityId());
-//                                                                                            ++hitCount;
-//                                                                                            if (hitLimit != 0 && hitCount >= hitLimit) {
-//                                                                                                break label238;
-//                                                                                            }
-//                                                                                        }
-//                                                                                    }
-//
-//                                                                                    tempEnt.remove();
-//                                                                                }
-//                                                                            }
-//
-//                                                                            CSDirector.this.callShootEvent(player, null, parentNode);
-//                                                                            CSDirector.this.playSoundEffects(player, parentNode, ".Shooting.Sounds_Projectile", false,null);
-//                                                                            player.removeAttachment(attachment);
-//                                                                        } else if (proType.equalsIgnoreCase("splash")) {
-//                                                                            ThrownPotion splashPot = player.getWorld().spawn(projLoc, ThrownPotion.class);
-//                                                                            ItemStack potType = CSDirector.this.csminion.parseItemStack(CSDirector.this.getString(parentNode + ".Shooting.Projectile_Subtype"));
-//                                                                            if (potType != null) {
-//                                                                                try {
-//                                                                                    splashPot.setItem(potType);
-//                                                                                } catch (IllegalArgumentException var49) {
-//                                                                                    player.sendMessage(CSDirector.this.heading + "The value for 'Projectile_Subtype' of weapon '" + parentNode + "' is not a splash potion!");
-//                                                                                }
-//                                                                            }
-//
-//                                                                            if (setOnFire) {
-//                                                                                splashPot.setFireTicks(6000);
-//                                                                            }
-//
-//                                                                            if (noBulletDrop) {
-//                                                                                CSDirector.this.noArcInArchery(splashPot, dirVel.multiply(projSpeed));
-//                                                                            }
-//
-//                                                                            splashPot.setShooter(player);
-//                                                                            splashPot.setMetadata("projParentNode", new FixedMetadataValue(CSDirector.this.plugin, parentNode));
-//                                                                            splashPot.setVelocity(dirVel.multiply(projSpeed));
-//                                                                            CSDirector.this.callShootEvent(player, splashPot, parentNode);
-//                                                                            if (dragRem != null) {
-//                                                                                CSDirector.this.prepareTermination(splashPot, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
-//                                                                            }
-//                                                                        } else {
-//                                                                            Projectile snowball;
-//                                                                            if (projectile_type.equalsIgnoreCase("arrow")) {
-//                                                                                snowball = (Projectile)player.getWorld().spawnEntity(projLoc, EntityType.ARROW);
-//                                                                            } else if (projectile_type.equalsIgnoreCase("egg")) {
-//                                                                                snowball = (Projectile)player.getWorld().spawnEntity(projLoc, EntityType.EGG);
-//                                                                                snowball.setMetadata("CS_Hardboiled", new FixedMetadataValue(CSDirector.this.plugin, true));
-//                                                                            } else if (projectile_type.equalsIgnoreCase("fireball")) {
-//                                                                                snowball = player.launchProjectile(LargeFireball.class);
-//                                                                                if (Boolean.parseBoolean(CSDirector.this.getString(parentNode + ".Shooting.Projectile_Subtype"))) {
-//                                                                                    snowball.setMetadata("CS_NoDeflect", new FixedMetadataValue(CSDirector.this.plugin, true));
-//                                                                                }
-//                                                                            } else if (projectile_type.equalsIgnoreCase("witherskull")) {
-//                                                                                snowball = player.launchProjectile(WitherSkull.class);
-//                                                                            } else {
-//                                                                                snowball = (Projectile)player.getWorld().spawnEntity(projLoc, EntityType.SNOWBALL);
-//                                                                            }
-//
-//                                                                            if (setOnFire) {
-//                                                                                snowball.setFireTicks(6000);
-//                                                                            }
-//
-//                                                                            if (noBulletDrop) {
-//                                                                                CSDirector.this.noArcInArchery(snowball, dirVel.multiply(projSpeed));
-//                                                                            }
-//
-//                                                                            snowball.setShooter(player);
-//                                                                            snowball.setVelocity(dirVel.multiply(projSpeed));
-//                                                                            snowball.setMetadata("projParentNode", new FixedMetadataValue(CSDirector.this.plugin, parentNode));
-//                                                                            CSDirector.this.callShootEvent(player, snowball, parentNode);
-//                                                                            CSDirector.this.playSoundEffects(snowball, parentNode, ".Shooting.Sounds_Projectile", false, null);
-//                                                                            if (dragRem != null) {
-//                                                                                CSDirector.this.prepareTermination(snowball, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
-//                                                                            }
-//                                                                        }
-//                                                                    } else {
-//                                                                        CSDirector.this.launchGrenade(player, parentNode, timer, dirVel.multiply(projSpeed), null, 0);
-//                                                                    }
-//                                                                }
-//
-//                                                            }
-//                                                        }
-//                                                    }, (long) (burstDelay * burst) + 1L);
-//                                                    if (oneTime && burst == 0 && (deviceType == null || !deviceType.equalsIgnoreCase("remote") && !deviceType.equalsIgnoreCase("trap"))) {
-//                                                        this.csminion.oneTime(player);
-//                                                    }
-//
-//                                                    String user = player.getName();
-//                                                    Collection<Integer> values = this.burst_task_IDs.get(user);
-//                                                    if (values == null) {
-//                                                        values = new ArrayList();
-//                                                        this.burst_task_IDs.put(user, values);
-//                                                    }
-//
-//                                                    values.add(task_ID);
-//                                                }
-//
-//                                            }
-//                                        }
-//                                    }
-//                                }
-//                            }
-//                        }
-//                    }
-//                }
-//            }
-//        }
-//    }
 // Основной движок выстрела: проверка боезапаса, события, спавн projectile и burst/recoil-логика.
     public void fireProjectile(final Player player, final String parentNode, final boolean leftClick) {
         int gunSlot = player.getInventory().getHeldItemSlot();
-        int shootDelay = this.getInt(parentNode + ".Shooting.Delay_Between_Shots");
-        final int projAmount = this.getInt(parentNode + ".Shooting.Projectile_Amount");
-        final boolean ammoEnable = this.getBoolean(parentNode + ".Ammo.Enable");
-        final boolean oneTime = this.getBoolean(parentNode + ".Extras.One_Time_Use");
-        String deviceType = this.getString(parentNode + ".Explosive_Devices.Device_Type");
-        final String proType = this.getString(parentNode + ".Shooting.Projectile_Type");
+        int shootDelay = ConfigCache.getInt(parentNode + ".Shooting.Delay_Between_Shots");
+        final int projAmount = ConfigCache.getInt(parentNode + ".Shooting.Projectile_Amount");
+        final boolean ammoEnable = ConfigCache.getBoolean(parentNode + ".Ammo.Enable");
+        final boolean oneTime = ConfigCache.getBoolean(parentNode + ".Extras.One_Time_Use");
+        String deviceType = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Type");
+        final String proType = ConfigCache.getString(parentNode + ".Shooting.Projectile_Type");
         ItemStack item = player.getInventory().getItemInHand();
-        final boolean isFullyAuto = this.getBoolean(parentNode + ".Fully_Automatic.Enable");
-        int fireRate = this.getInt(parentNode + ".Fully_Automatic.Fire_Rate");
-        boolean burstEnable = this.getBoolean(parentNode + ".Burstfire.Enable");
-        int burstShots = this.getInt(parentNode + ".Burstfire.Shots_Per_Burst");
-        int burstDelay = this.getInt(parentNode + ".Burstfire.Delay_Between_Shots_In_Burst");
-        boolean meleeMode = this.getBoolean(parentNode + ".Item_Information.Melee_Mode");
-        boolean shootDisable = this.getBoolean(parentNode + ".Shooting.Disable");
-        final boolean reloadOn = this.getBoolean(parentNode + ".Reload.Enable");
-        final boolean dualWield = this.isDualWield(player, parentNode, item);
+        final boolean isFullyAuto = ConfigCache.getBoolean(parentNode + ".Fully_Automatic.Enable");
+        int fireRate = ConfigCache.getInt(parentNode + ".Fully_Automatic.Fire_Rate");
+        boolean burstEnable = ConfigCache.getBoolean(parentNode + ".Burstfire.Enable");
+        int burstShots = ConfigCache.getInt(parentNode + ".Burstfire.Shots_Per_Burst");
+        int burstDelay = ConfigCache.getInt(parentNode + ".Burstfire.Delay_Between_Shots_In_Burst");
+        boolean meleeMode = ConfigCache.getBoolean(parentNode + ".Item_Information.Melee_Mode");
+        boolean shootDisable = ConfigCache.getBoolean(parentNode + ".Shooting.Disable");
+        final boolean reloadOn = ConfigCache.getBoolean(parentNode + ".Reload.Enable");
+        final boolean dualWield = WeaponHelperUtils.isDualWield(player, parentNode, item);
         if (!shootDisable && !meleeMode) {
-            Vector shiftVector = this.determinePosition(player, dualWield, leftClick);
+            Vector shiftVector = MathUtils.determinePosition(player, dualWield, leftClick);
             final Location projLoc = player.getEyeLocation().toVector().add(shiftVector.multiply(0.2)).toLocation(player.getWorld());
-            final String actType = this.getString(parentNode + ".Firearm_Action.Type");
+            final String actType = ConfigCache.getString(parentNode + ".Firearm_Action.Type");
             final boolean tweakyAction = actType != null && (actType.toLowerCase().contains("bolt") || actType.toLowerCase().contains("lever") || actType.toLowerCase().contains("pump"));
             if (!player.hasMetadata(parentNode + "shootDelay" + gunSlot + leftClick)) {
                 if (!player.hasMetadata(parentNode + "noShooting" + gunSlot)) {
@@ -2140,8 +1396,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                                 }
                             }
 
-                            if (this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("ᴿ")) {
-                                if (this.getAmmoBetweenBrackets(player, parentNode, item) <= 0) {
+                            if (ItemUtils.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("ᴿ")) {
+                                if (AmmoUtils.getAmmoBetweenBrackets(player, parentNode, item) <= 0) {
                                     this.reloadAnimation(player, parentNode);
                                     return;
                                 }
@@ -2150,7 +1406,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                     this.terminateReload(player);
                                     this.removeInertReloadTag(player, 0, true);
                                 } else {
-                                    int[] ammoReading = this.grabDualAmmo(item, parentNode);
+                                    int[] ammoReading = AmmoUtils.grabDualAmmo(item, parentNode);
                                     if (ammoReading[0] > 0 && leftClick || ammoReading[1] > 0 && !leftClick) {
                                         this.terminateReload(player);
                                         this.removeInertReloadTag(player, 0, true);
@@ -2164,16 +1420,16 @@ public class CSDirector extends JavaPlugin implements Listener {
                                     this.csminion.tempVars(player, parentNode + "shootDelay" + gunSlot + leftClick, (long) shootDelay);
                                 }
 
-                                final String ammoInfo = this.getString(parentNode + ".Ammo.Ammo_Item_ID");
-                                final boolean ammoPerShot = this.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
-                                final double zoomAcc = this.getDouble(parentNode + ".Scope.Zoom_Bullet_Spread");
-                                final boolean sneakOn = this.getBoolean(parentNode + ".Sneak.Enable");
-                                boolean sneakToShoot = this.getBoolean(parentNode + ".Sneak.Sneak_Before_Shooting");
-                                final boolean sneakNoRec = this.getBoolean(parentNode + ".Sneak.No_Recoil");
-                                final double sneakAcc = this.getDouble(parentNode + ".Sneak.Bullet_Spread");
-                                final boolean exploDevs = this.getBoolean(parentNode + ".Explosive_Devices.Enable");
-                                boolean takeAmmo = this.getBoolean(parentNode + ".Reload.Take_Ammo_On_Reload");
-                                String dragRemInfo = this.getString(parentNode + ".Shooting.Removal_Or_Drag_Delay");
+                                final String ammoInfo = ConfigCache.getString(parentNode + ".Ammo.Ammo_Item_ID");
+                                final boolean ammoPerShot = ConfigCache.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
+                                final double zoomAcc = ConfigCache.getDouble(parentNode + ".Scope.Zoom_Bullet_Spread");
+                                final boolean sneakOn = ConfigCache.getBoolean(parentNode + ".Sneak.Enable");
+                                boolean sneakToShoot = ConfigCache.getBoolean(parentNode + ".Sneak.Sneak_Before_Shooting");
+                                final boolean sneakNoRec = ConfigCache.getBoolean(parentNode + ".Sneak.No_Recoil");
+                                final double sneakAcc = ConfigCache.getDouble(parentNode + ".Sneak.Bullet_Spread");
+                                final boolean exploDevs = ConfigCache.getBoolean(parentNode + ".Explosive_Devices.Enable");
+                                boolean takeAmmo = ConfigCache.getBoolean(parentNode + ".Reload.Take_Ammo_On_Reload");
+                                String dragRemInfo = ConfigCache.getString(parentNode + ".Shooting.Removal_Or_Drag_Delay");
                                 final String[] dragRem = dragRemInfo == null ? null : dragRemInfo.split("-");
                                 if (dragRem != null) {
                                     try {
@@ -2184,7 +1440,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                     }
                                 }
 
-                                if (this.getBoolean(parentNode + ".Ammo.Take_Ammo_On_Reload")) {
+                                if (ConfigCache.getBoolean(parentNode + ".Ammo.Take_Ammo_On_Reload")) {
                                     player.sendMessage(this.heading + "For the weapon '" + parentNode + "', the Ammo module does not support the 'Take_Ammo_On_Reload' node. Did you mean to place it in the Reload module?");
                                 } else {
                                     if (ammoEnable) {
@@ -2196,14 +1452,14 @@ public class CSDirector extends JavaPlugin implements Listener {
                                         if (!this.csminion.containsItemStack(player, ammoInfo, 1, parentNode)) {
                                             boolean isPumpOrBolt = actType != null && !actType.equalsIgnoreCase("pump") && !actType.equalsIgnoreCase("bolt");
                                             boolean hasLoadedChamber = item.getItemMeta().getDisplayName().contains("▪ «");
-                                            if (ammoPerShot || takeAmmo && this.getAmmoBetweenBrackets(player, parentNode, item) == 0 && (isPumpOrBolt || !hasLoadedChamber)) {
-                                                this.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
+                                            if (ammoPerShot || takeAmmo && AmmoUtils.getAmmoBetweenBrackets(player, parentNode, item) == 0 && (isPumpOrBolt || !hasLoadedChamber)) {
+                                                SoundUtils.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
                                                 return;
                                             }
                                         }
                                     }
 
-                                    if (!sneakToShoot || player.isSneaking() && !this.isAir(player.getLocation().getBlock().getRelative(BlockFace.DOWN).getType())) {
+                                    if (!sneakToShoot || player.isSneaking() && !WeaponHelperUtils.isAir(player.getLocation().getBlock().getRelative(BlockFace.DOWN).getType())) {
                                         if (!this.checkBoltPosition(player, parentNode)) {
                                             if (!burstEnable) {
                                                 burstShots = 1;
@@ -2214,11 +1470,11 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 burstDelay = 1;
                                             }
 
-                                            final double projSpeed = (double) this.getInt(parentNode + ".Shooting.Projectile_Speed") * 0.1;
-                                            final boolean setOnFire = this.getBoolean(parentNode + ".Shooting.Projectile_Flames");
-                                            final boolean noBulletDrop = this.getBoolean(parentNode + ".Shooting.Remove_Bullet_Drop");
-                                            if (!this.getBoolean(parentNode + ".Scope.Zoom_Before_Shooting") || player.hasMetadata("ironsights")) {
-                                                int shootReloadBuffer = this.getInt(parentNode + ".Reload.Shoot_Reload_Buffer");
+                                            final double projSpeed = (double) ConfigCache.getInt(parentNode + ".Shooting.Projectile_Speed") * 0.1;
+                                            final boolean setOnFire = ConfigCache.getBoolean(parentNode + ".Shooting.Projectile_Flames");
+                                            final boolean noBulletDrop = ConfigCache.getBoolean(parentNode + ".Shooting.Remove_Bullet_Drop");
+                                            if (!ConfigCache.getBoolean(parentNode + ".Scope.Zoom_Before_Shooting") || player.hasMetadata("ironsights")) {
+                                                int shootReloadBuffer = ConfigCache.getInt(parentNode + ".Reload.Shoot_Reload_Buffer");
                                                 if (shootReloadBuffer > 0) {
                                                     Map<Integer, Long> lastShot = (Map) this.last_shot_list.get(player.getName());
                                                     if (lastShot == null) {
@@ -2264,7 +1520,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                     CSDirector.this.burst_task_IDs.remove(playerName);
                                                                 }
 
-                                                                if (!CSDirector.this.isValid(tick, fireRateFinal)) {
+                                                                if (!WeaponHelperUtils.isValid(tick, fireRateFinal)) {
                                                                     return;
                                                                 }
                                                             } else if (isLastShot) {
@@ -2273,7 +1529,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                                                             ItemStack item = player.getInventory().getItemInHand();
                                                             if (!oneTime) {
-                                                                if (CSDirector.this.switchedTheItem(player, parentNode) /*|| itemSlot != player.getInventory().getHeldItemSlot()*/) {
+                                                                if (CSDirector.this.switchedTheItem(player, parentNode) || itemSlot != player.getInventory().getHeldItemSlot()) {
                                                                     CSDirector.this.unscopePlayer(player);
                                                                     CSDirector.this.terminateAllBursts(player);
                                                                     return;
@@ -2282,7 +1538,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                 boolean normalAction = false;
                                                                 if (actType == null) {
                                                                     normalAction = true;
-                                                                    String attachType = CSDirector.this.getAttachment(parentNode, item)[0];
+                                                                    String attachType = WeaponAttachmentUtils.getAttachment(parentNode, item)[0];
                                                                     String filter = item.getItemMeta().getDisplayName();
                                                                     if (attachType == null || !attachType.equalsIgnoreCase("accessory")) {
                                                                         if (filter.contains("▪ «")) {
@@ -2307,7 +1563,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                         return;
                                                                     }
 
-                                                                    int detectedAmmo = CSDirector.this.getAmmoBetweenBrackets(player, parentNode, item);
+                                                                    int detectedAmmo = AmmoUtils.getAmmoBetweenBrackets(player, parentNode, item);
                                                                     if (normalAction) {
                                                                         if (detectedAmmo <= 0) {
                                                                             CSDirector.this.reloadAnimation(player, parentNode);
@@ -2328,7 +1584,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                 }
                                                             }
 
-                                                            double bulletSpread = CSDirector.this.getDouble(parentNode + ".Shooting.Bullet_Spread");
+                                                            double bulletSpread = ConfigCache.getDouble(parentNode + ".Shooting.Bullet_Spread");
                                                             if (player.isSneaking() && sneakOn) {
                                                                 bulletSpread = sneakAcc;
                                                             }
@@ -2341,9 +1597,9 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                 bulletSpread = 0.1;
                                                             }
 
-                                                            boolean noVertRecoil = CSDirector.this.getBoolean(parentNode + ".Abilities.No_Vertical_Recoil");
-                                                            boolean jetPack = CSDirector.this.getBoolean(parentNode + ".Abilities.Jetpack_Mode");
-                                                            double recoilAmount = (double) CSDirector.this.getInt(parentNode + ".Shooting.Recoil_Amount") * 0.1;
+                                                            boolean noVertRecoil = ConfigCache.getBoolean(parentNode + ".Abilities.No_Vertical_Recoil");
+                                                            boolean jetPack = ConfigCache.getBoolean(parentNode + ".Abilities.Jetpack_Mode");
+                                                            double recoilAmount = (double) ConfigCache.getInt(parentNode + ".Shooting.Recoil_Amount") * 0.1;
                                                             if (recoilAmount != (double) 0.0F && (!sneakOn || !sneakNoRec || !player.isSneaking())) {
                                                                 if (!jetPack) {
                                                                     Vector velToAdd = player.getLocation().getDirection().multiply(-recoilAmount);
@@ -2357,7 +1613,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                 }
                                                             }
 
-                                                            boolean clearFall = CSDirector.this.getBoolean(parentNode + ".Shooting.Reset_Fall_Distance");
+                                                            boolean clearFall = ConfigCache.getBoolean(parentNode + ".Shooting.Reset_Fall_Distance");
                                                             if (clearFall) {
                                                                 player.setFallDistance(0.0F);
                                                             }
@@ -2365,29 +1621,28 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                             CSDirector.this.csminion.giveParticleEffects(player, parentNode, ".Particles.Particle_Player_Shoot", true, (Location) null);
                                                             CSDirector.this.csminion.givePotionEffects(player, parentNode, ".Potion_Effects.Potion_Effect_Shooter", /*"shoot"*/PotionActivation.SHOOT);
                                                             CSDirector.this.csminion.displayFireworks(player, parentNode, ".Fireworks.Firework_Player_Shoot");
-//                                                            CSDirector.this.csminion.runCommand
                                                             CSDirector.this.weaponCommandManager.runCommand(player, parentNode);
-                                                            if (CSDirector.this.getBoolean(parentNode + ".Abilities.Hurt_Effect")) {
+                                                            if (ConfigCache.getBoolean(parentNode + ".Abilities.Hurt_Effect")) {
                                                                 player.playEffect(EntityEffect.HURT);
                                                             }
 
-                                                            String projectile_type = CSDirector.this.getString(parentNode + ".Shooting.Projectile_Type");
-                                                            int timer = CSDirector.this.getInt(parentNode + ".Explosions.Explosion_Delay");
-                                                            boolean airstrike = CSDirector.this.getBoolean(parentNode + ".Airstrikes.Enable");
+                                                            String projectile_type = ConfigCache.getString(parentNode + ".Shooting.Projectile_Type");
+                                                            int timer = ConfigCache.getInt(parentNode + ".Explosions.Explosion_Delay");
+                                                            boolean airstrike = ConfigCache.getBoolean(parentNode + ".Airstrikes.Enable");
                                                             if (airstrike) {
-                                                                timer = CSDirector.this.getInt(parentNode + ".Airstrikes.Flare_Activation_Delay");
+                                                                timer = ConfigCache.getInt(parentNode + ".Airstrikes.Flare_Activation_Delay");
                                                             }
 
-                                                            String soundsShoot = CSDirector.this.getString(parentNode + ".Shooting.Sounds_Shoot");
+                                                            String soundsShoot = ConfigCache.getString(parentNode + ".Shooting.Sounds_Shoot");
                                                             WeaponPreShootEvent event = new WeaponPreShootEvent(player, parentNode, soundsShoot, bulletSpread, leftClick);
                                                             CSDirector.this.plugin.getServer().getPluginManager().callEvent(event);
-                                                            CSDirector.this.playSoundEffects(player, parentNode, (String) null, false, (Location) null, event.getSounds());
+                                                            SoundUtils.playSoundEffects(player, parentNode, (String) null, false, (Location) null, event.getSounds());
                                                             if (!event.isCancelled()) {
                                                                 bulletSpread = event.getBulletSpread();
                                                                 final ProjectileSubtypeData projectileSubtypeData;
 
                                                                 try {
-                                                                    projectileSubtypeData = CSDirector.this.parseProjectileSubtype(parentNode);
+                                                                    projectileSubtypeData = ProjectileSubtypeParser.parseProjectileSubtype(parentNode);
                                                                 } catch (IllegalArgumentException ex) {
                                                                     player.sendMessage(CSDirector.this.heading + ex.getMessage());
                                                                     return;
@@ -2438,7 +1693,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                             for (double k = (double) 0.0F; k < (double) range; k += radius) {
                                                                                 locStart.add(vecShift);
                                                                                 Block hitBlock = locStart.getBlock();
-                                                                                if (!CSDirector.this.isAir(hitBlock.getType())) {
+                                                                                if (!WeaponHelperUtils.isAir(hitBlock.getType())) {
                                                                                     if (wallLimit != -1 && !hitBlocks.contains(hitBlock)) {
                                                                                         ++wallCount;
                                                                                         if (wallCount > wallLimit) {
@@ -2471,8 +1726,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                                 }
                                                                             }
 
-                                                                            CSDirector.this.callShootEvent(player, (Entity) null, parentNode);
-                                                                            CSDirector.this.playSoundEffects(player, parentNode, ".Shooting.Sounds_Projectile", false, (Location) null);
+                                                                            ProjectileUtils.callShootEvent(player, (Entity) null, parentNode);
+                                                                            SoundUtils.playSoundEffects(player, parentNode, ".Shooting.Sounds_Projectile", false, (Location) null);
                                                                             player.removeAttachment(attachment);
                                                                         } else if (proType.equalsIgnoreCase("splash")) {
                                                                             ThrownPotion splashPot = (ThrownPotion) player.getWorld().spawn(projLoc, ThrownPotion.class);
@@ -2491,15 +1746,15 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                             }
 
                                                                             if (noBulletDrop) {
-                                                                                CSDirector.this.noArcInArchery(splashPot, dirVel.multiply(projSpeed));
+                                                                                ProjectileUtils.noArcInArchery(splashPot, dirVel.multiply(projSpeed));
                                                                             }
 
                                                                             splashPot.setShooter(player);
                                                                             splashPot.setMetadata("projParentNode", new FixedMetadataValue(CSDirector.this.plugin, parentNode));
                                                                             splashPot.setVelocity(dirVel.multiply(projSpeed));
-                                                                            CSDirector.this.callShootEvent(player, splashPot, parentNode);
+                                                                            ProjectileUtils.callShootEvent(player, splashPot, parentNode);
                                                                             if (dragRem != null) {
-                                                                                CSDirector.this.prepareTermination(splashPot, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
+                                                                                ProjectileUtils.prepareTermination(splashPot, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
                                                                             }
                                                                         } else {
                                                                             Projectile snowball;
@@ -2524,16 +1779,16 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                                             }
 
                                                                             if (noBulletDrop) {
-                                                                                CSDirector.this.noArcInArchery(snowball, dirVel.multiply(projSpeed));
+                                                                                ProjectileUtils.noArcInArchery(snowball, dirVel.multiply(projSpeed));
                                                                             }
 
                                                                             snowball.setShooter(player);
                                                                             snowball.setVelocity(dirVel.multiply(projSpeed));
                                                                             snowball.setMetadata("projParentNode", new FixedMetadataValue(CSDirector.this.plugin, parentNode));
-                                                                            CSDirector.this.callShootEvent(player, snowball, parentNode);
-                                                                            CSDirector.this.playSoundEffects(snowball, parentNode, ".Shooting.Sounds_Projectile", false, (Location) null);
+                                                                            ProjectileUtils.callShootEvent(player, snowball, parentNode);
+                                                                            SoundUtils.playSoundEffects(snowball, parentNode, ".Shooting.Sounds_Projectile", false, (Location) null);
                                                                             if (dragRem != null) {
-                                                                                CSDirector.this.prepareTermination(snowball, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
+                                                                                ProjectileUtils.prepareTermination(snowball, Boolean.parseBoolean(dragRem[1]), Long.valueOf(dragRem[0]));
                                                                             }
                                                                         }
                                                                     } else {
@@ -2570,62 +1825,47 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
     }
 
-    public void noArcInArchery(final Projectile proj, final Vector direction) {
-        Bukkit.getScheduler().scheduleSyncDelayedTask(this, () -> {
-            if (!proj.isDead()) {
-                proj.setVelocity(direction);
-                CSDirector.this.noArcInArchery(proj, direction);
-            }
-
-        }, 1L);
-    }
-
-    public void callShootEvent(Player player, Entity objProj, String weaponTitle) {
-        WeaponShootEvent event = new WeaponShootEvent(player, objProj, weaponTitle);
-        this.getServer().getPluginManager().callEvent(event);
-    }
-
     public void reloadAnimation(final Player player, final String parent_node, boolean... reloadStart) {
-        if (this.getBoolean(parent_node + ".Reload.Enable") && !player.hasMetadata("markOfTheReload")) {
+        if (ConfigCache.getBoolean(parent_node + ".Reload.Enable") && !player.hasMetadata("markOfTheReload")) {
             String playerName = player.getName();
             if (this.delayed_reload_IDs.containsKey(playerName)) {
                 Bukkit.getScheduler().cancelTask((Integer) this.delayed_reload_IDs.get(playerName));
                 this.delayed_reload_IDs.remove(playerName);
             }
 
-            int relDuration = this.getInt(parent_node + ".Reload.Reload_Duration");
+            int relDuration = ConfigCache.getInt(parent_node + ".Reload.Reload_Duration");
             ItemStack held = player.getItemInHand();
             boolean isStart = reloadStart.length == 0;
-            final boolean takeAsMag = this.getBoolean(parent_node + ".Reload.Take_Ammo_As_Magazine");
-            final boolean takeAmmo = this.getBoolean(parent_node + ".Reload.Take_Ammo_On_Reload");
-            final boolean reloadIndie = this.getBoolean(parent_node + ".Reload.Reload_Bullets_Individually");
-            final boolean ammoEnable = this.getBoolean(parent_node + ".Ammo.Enable");
-            final String ammoInfo = this.getString(parent_node + ".Ammo.Ammo_Item_ID");
-            int openTime = this.getInt(parent_node + ".Firearm_Action.Open_Duration");
-            final int closeTime = this.getInt(parent_node + ".Firearm_Action.Close_Duration") + this.getInt(parent_node + ".Firearm_Action.Reload_Close_Delay");
+            final boolean takeAsMag = ConfigCache.getBoolean(parent_node + ".Reload.Take_Ammo_As_Magazine");
+            final boolean takeAmmo = ConfigCache.getBoolean(parent_node + ".Reload.Take_Ammo_On_Reload");
+            final boolean reloadIndie = ConfigCache.getBoolean(parent_node + ".Reload.Reload_Bullets_Individually");
+            final boolean ammoEnable = ConfigCache.getBoolean(parent_node + ".Ammo.Enable");
+            final String ammoInfo = ConfigCache.getString(parent_node + ".Ammo.Ammo_Item_ID");
+            int openTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Open_Duration");
+            final int closeTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Close_Duration") + ConfigCache.getInt(parent_node + ".Firearm_Action.Reload_Close_Delay");
             boolean akimboSingleReload = false;
             String reloadSound = ".Reload.Sounds_Reloading";
-            final boolean dualWield = this.isDualWield(player, parent_node, held);
+            final boolean dualWield = WeaponHelperUtils.isDualWield(player, parent_node, held);
             final int reloadAmt = dualWield ? this.getReloadAmount(player, parent_node, held) * 2 : this.getReloadAmount(player, parent_node, held);
             final String replacer = dualWield ? reloadAmt / 2 + " | " + reloadAmt / 2 : String.valueOf(reloadAmt);
-            String actionType = dualWield ? null : this.getString(parent_node + ".Firearm_Action.Type");
+            String actionType = dualWield ? null : ConfigCache.getString(parent_node + ".Firearm_Action.Type");
             if (reloadAmt <= 0) {
                 player.sendMessage(this.heading + "The weapon '" + parent_node + "' is using the Reload module, but is missing a valid value for 'Reload_Amount'.");
-            } else if (this.getBoolean(parent_node + ".Reload.Destroy_When_Empty") && held != null && held.getType() != Material.AIR && held.hasItemMeta()) {
-                if (this.getAmmoBetweenBrackets(player, parent_node, held) == 0) {
+            } else if (ConfigCache.getBoolean(parent_node + ".Reload.Destroy_When_Empty") && held != null && held.getType() != Material.AIR && held.hasItemMeta()) {
+                if (AmmoUtils.getAmmoBetweenBrackets(player, parent_node, held) == 0) {
                     boolean validAction = actionType == null || actionType.equalsIgnoreCase("slide") || actionType.equalsIgnoreCase("break") || actionType.equalsIgnoreCase("revolver");
                     if (validAction || !held.getItemMeta().getDisplayName().contains("▪")) {
                         player.setItemInHand((ItemStack) null);
                     }
                 }
 
-            } else if (this.getBoolean("Merged_Reload.Disable") && held.getAmount() > 1) {
-                String deniedMsg = this.getString("Merged_Reload.Message_Denied");
+            } else if (ConfigCache.getBoolean("Merged_Reload.Disable") && held.getAmount() > 1) {
+                String deniedMsg = ConfigCache.getString("Merged_Reload.Message_Denied");
                 if (deniedMsg != null) {
                     player.sendMessage(deniedMsg);
                 }
 
-                this.playSoundEffects(player, "Merged_Reload", "Sounds_Denied", false, (Location) null);
+                SoundUtils.playSoundEffects(player, "Merged_Reload", "Sounds_Denied", false, (Location) null);
             } else {
                 boolean boltAct = false;
                 final boolean pumpAct = actionType != null && actionType.equalsIgnoreCase("pump");
@@ -2650,7 +1890,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                 boolean isOutOfAmmo = takeAmmo && ammoEnable && !this.csminion.containsItemStack(player, ammoInfo, 1, parent_node);
                 if (!isSwitched && !isOutOfAmmo) {
                     if (dualWield) {
-                        int[] ammoReading = this.grabDualAmmo(held, parent_node);
+                        int[] ammoReading = AmmoUtils.grabDualAmmo(held, parent_node);
                         if (ammoReading[0] + ammoReading[1] >= reloadAmt) {
                             player.removeMetadata("markOfTheReload", this);
                             return;
@@ -2659,12 +1899,12 @@ public class CSDirector extends JavaPlugin implements Listener {
                         boolean oneIsFull = ammoReading[0] == reloadAmt / 2 || ammoReading[1] == reloadAmt / 2;
                         boolean oneAmmoOnly = takeAmmo && ammoEnable && this.csminion.countItemStacks(player, ammoInfo, parent_node) == 1;
                         if (!reloadIndie && (oneIsFull || oneAmmoOnly)) {
-                            relDuration = this.getInt(parent_node + ".Reload.Dual_Wield.Single_Reload_Duration");
+                            relDuration = ConfigCache.getInt(parent_node + ".Reload.Dual_Wield.Single_Reload_Duration");
                             reloadSound = ".Reload.Dual_Wield.Sounds_Single_Reload";
                             akimboSingleReload = true;
                         }
                     } else {
-                        String attachType = this.getAttachment(parent_node, held)[0];
+                        String attachType = WeaponAttachmentUtils.getAttachment(parent_node, held)[0];
                         String displayName = held.getItemMeta().getDisplayName();
                         boolean isAccessory = attachType != null && attachType.equalsIgnoreCase("accessory");
                         boolean boltFull = boltAct && displayName.contains("▪ «" + (reloadAmt - 1)) && !isAccessory;
@@ -2713,10 +1953,10 @@ public class CSDirector extends JavaPlugin implements Listener {
                     }
 
                     if (reloadIndie && isStart) {
-                        relDuration += this.getInt(parent_node + ".Reload.First_Reload_Delay");
+                        relDuration += ConfigCache.getInt(parent_node + ".Reload.First_Reload_Delay");
                     }
 
-                    int shootReloadBuffer = this.getInt(parent_node + ".Reload.Shoot_Reload_Buffer");
+                    int shootReloadBuffer = ConfigCache.getInt(parent_node + ".Reload.Shoot_Reload_Buffer");
                     if (shootReloadBuffer > 0) {
                         Map<Integer, Long> map = (Map) this.last_shot_list.get(playerName);
                         if (map != null) {
@@ -2731,7 +1971,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                         }
                     }
 
-                    WeaponReloadEvent event = new WeaponReloadEvent(player, parent_node, this.getString(parent_node + reloadSound), relDuration);
+                    WeaponReloadEvent event = new WeaponReloadEvent(player, parent_node, ConfigCache.getString(parent_node + reloadSound), relDuration);
                     this.plugin.getServer().getPluginManager().callEvent(event);
                     final String soundsReload = event.getSounds();
                     relDuration = event.getReloadDuration();
@@ -2739,13 +1979,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                         double reloadSpeed = event.getReloadSpeed();
                         relDuration = (int) ((double) relDuration * reloadSpeed);
                         if (!reloadIndie) {
-                            this.playSoundEffectsScaled(player, parent_node, (String) null, true, reloadSpeed, soundsReload);
+                            SoundUtils.playSoundEffectsScaled(player, parent_node, (String) null, true, reloadSpeed, soundsReload);
                         }
                     } else if (!reloadIndie) {
-                        this.playSoundEffects(player, parent_node, (String) null, true, (Location) null, soundsReload);
+                        SoundUtils.playSoundEffects(player, parent_node, (String) null, true, (Location) null, soundsReload);
                     }
 
-                    final int reloadShootDelay = akimboSingleReload ? this.getInt(parent_node + ".Reload.Dual_Wield.Single_Reload_Shoot_Delay") : this.getInt(parent_node + ".Reload.Reload_Shoot_Delay");
+                    final int reloadShootDelay = akimboSingleReload ? ConfigCache.getInt(parent_node + ".Reload.Dual_Wield.Single_Reload_Shoot_Delay") : ConfigCache.getInt(parent_node + ".Reload.Reload_Shoot_Delay");
                     int task_ID = Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
                         public void run() {
                             if (takeAmmo && ammoEnable && !CSDirector.this.csminion.containsItemStack(player, ammoInfo, 1, parent_node)) {
@@ -2758,14 +1998,14 @@ public class CSDirector extends JavaPlugin implements Listener {
                                         CSDirector.this.csminion.givePotionEffects(player, parent_node, ".Potion_Effects.Potion_Effect_Shooter", /*"reload"*/ PotionActivation.RELOAD);
                                         CSDirector.this.removeInertReloadTag(player, 0, true);
                                         CSDirector.this.clearShootDelayMetadata(player, parent_node, player.getInventory().getHeldItemSlot());
-                                        int currentAmmo = CSDirector.this.getAmmoBetweenBrackets(player, parent_node, item);
+                                        int currentAmmo = AmmoUtils.getAmmoBetweenBrackets(player, parent_node, item);
                                         if (takeAmmo && ammoEnable) {
                                             if (reloadIndie) {
                                                 if (!dualWield) {
                                                     ++currentAmmo;
                                                     CSDirector.this.csminion.replaceBrackets(item, String.valueOf(currentAmmo), parent_node);
                                                 } else {
-                                                    int[] ammoReading = CSDirector.this.grabDualAmmo(item, parent_node);
+                                                    int[] ammoReading = AmmoUtils.grabDualAmmo(item, parent_node);
                                                     int leftGun = ammoReading[0];
                                                     int rightGun = ammoReading[1];
                                                     if (leftGun != reloadAmt / 2 && leftGun <= rightGun) {
@@ -2780,7 +2020,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 }
 
                                                 CSDirector.this.reloadShootDelay(player, parent_node, player.getInventory().getHeldItemSlot(), reloadShootDelay);
-                                                CSDirector.this.playSoundEffects(player, parent_node, (String) null, false, (Location) null, soundsReload);
+                                                SoundUtils.playSoundEffects(player, parent_node, (String) null, false, (Location) null, soundsReload);
                                                 CSDirector.this.csminion.removeNamedItem(player, ammoInfo, 1, parent_node, false);
                                                 WeaponReloadCompleteEvent event = new WeaponReloadCompleteEvent(player, parent_node);
                                                 CSDirector.this.plugin.getServer().getPluginManager().callEvent(event);
@@ -2799,7 +2039,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 if (!dualWield) {
                                                     CSDirector.this.csminion.replaceBrackets(item, String.valueOf(currentAmmo), parent_node);
                                                 } else if (currentAmmo < reloadAmt) {
-                                                    int[] ammoReading = CSDirector.this.grabDualAmmo(item, parent_node);
+                                                    int[] ammoReading = AmmoUtils.grabDualAmmo(item, parent_node);
                                                     int leftGun = ammoReading[0];
 
                                                     int rightGun;
@@ -2824,7 +2064,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 CSDirector.this.csminion.removeNamedItem(player, ammoInfo, 1, parent_node, false);
                                             } else {
                                                 int invAmmo = CSDirector.this.csminion.countItemStacks(player, ammoInfo, parent_node);
-                                                int[] ammoReading = CSDirector.this.grabDualAmmo(item, parent_node);
+                                                int[] ammoReading = AmmoUtils.grabDualAmmo(item, parent_node);
                                                 int amtToRemove = 0;
 
                                                 for (int i = 0; i < 2; ++i) {
@@ -2855,7 +2095,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                     ++currentAmmo;
                                                     CSDirector.this.csminion.replaceBrackets(item, String.valueOf(currentAmmo), parent_node);
                                                 } else {
-                                                    int[] ammoReading = CSDirector.this.grabDualAmmo(item, parent_node);
+                                                    int[] ammoReading = AmmoUtils.grabDualAmmo(item, parent_node);
                                                     int leftGun = ammoReading[0];
                                                     int rightGun = ammoReading[1];
                                                     if (leftGun != reloadAmt / 2 && leftGun <= rightGun) {
@@ -2870,7 +2110,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 }
 
                                                 CSDirector.this.reloadShootDelay(player, parent_node, player.getInventory().getHeldItemSlot(), reloadShootDelay);
-                                                CSDirector.this.playSoundEffects(player, parent_node, (String) null, false, (Location) null, soundsReload);
+                                                SoundUtils.playSoundEffects(player, parent_node, (String) null, false, (Location) null, soundsReload);
                                                 WeaponReloadCompleteEvent event = new WeaponReloadCompleteEvent(player, parent_node);
                                                 CSDirector.this.plugin.getServer().getPluginManager().callEvent(event);
                                                 CSDirector.this.reloadAnimation(player, parent_node, false);
@@ -2950,8 +2190,8 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     // Создаёт взрывной пакет CrackShot: урон, блоки, шрапнель, дополнительные взрывы и вторичные эффекты.
     public void projectileExplosion(final Entity objProj, final String parent_node, boolean grenade, final Player player, final boolean landmine, final boolean rde, final Location loc, final Block c4, final boolean trap, final int cTimes) {
-        if (this.getBoolean(parent_node + ".Explosions.Enable") && (rde || this.csminion.regionCheck(objProj, parent_node))) {
-            int delay = grenade ? 0 : this.getInt(parent_node + ".Explosions.Explosion_Delay");
+        if (ConfigCache.getBoolean(parent_node + ".Explosions.Enable") && (rde || this.csminion.regionCheck(objProj, parent_node))) {
+            int delay = grenade ? 0 : ConfigCache.getInt(parent_node + ".Explosions.Explosion_Delay");
             Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
                 public void run() {
                     Location location = null;
@@ -2965,7 +2205,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                             while (checker.hasNext()) {
                                 block = checker.next();
-                                if (CSDirector.this.isAir(block.getType())) {
+                                if (WeaponHelperUtils.isAir(block.getType())) {
                                     location = block.getLocation().add(0.5F, 0.5F, 0.5F);
                                     break;
                                 }
@@ -2986,13 +2226,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                         world = c4.getLocation().getWorld();
                     }
 
-                    boolean airstrike = CSDirector.this.getBoolean(parent_node + ".Airstrikes.Enable");
-                    boolean cEnable = CSDirector.this.getBoolean(parent_node + ".Cluster_Bombs.Enable");
-                    int cOfficialTimes = CSDirector.this.getInt(parent_node + ".Cluster_Bombs.Number_Of_Splits");
+                    boolean airstrike = ConfigCache.getBoolean(parent_node + ".Airstrikes.Enable");
+                    boolean cEnable = ConfigCache.getBoolean(parent_node + ".Cluster_Bombs.Enable");
+                    int cOfficialTimes = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Number_Of_Splits");
                     if (cEnable && !airstrike && cTimes < cOfficialTimes) {
-                        int cAmount = CSDirector.this.getInt(parent_node + ".Cluster_Bombs.Number_Of_Bomblets");
-                        int cSpeed = CSDirector.this.getInt(parent_node + ".Cluster_Bombs.Speed_Of_Bomblets");
-                        int timer = CSDirector.this.getInt(parent_node + ".Cluster_Bombs.Delay_Before_Detonation");
+                        int cAmount = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Number_Of_Bomblets");
+                        int cSpeed = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Speed_Of_Bomblets");
+                        int timer = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Delay_Before_Detonation");
                         Random r = new Random();
                         int totalAmount = (int) Math.pow(cAmount, cOfficialTimes);
                         if (totalAmount > 1000) {
@@ -3009,17 +2249,17 @@ public class CSDirector extends JavaPlugin implements Listener {
                             }
 
                             CSDirector.this.csminion.giveParticleEffects(null, parent_node, ".Cluster_Bombs.Particle_Release", false, location);
-                            CSDirector.this.playSoundEffects(null, parent_node, ".Cluster_Bombs.Sounds_Release", false, location);
+                            SoundUtils.playSoundEffects(null, parent_node, ".Cluster_Bombs.Sounds_Release", false, location);
                             WeaponExplodeEvent explodeEvent = new WeaponExplodeEvent(player, location, parent_node, true, false);
                             CSDirector.this.plugin.getServer().getPluginManager().callEvent(explodeEvent);
                         }
                     } else {
-                        boolean shrapEnable = CSDirector.this.getBoolean(parent_node + ".Shrapnel.Enable");
+                        boolean shrapEnable = ConfigCache.getBoolean(parent_node + ".Shrapnel.Enable");
                         if (shrapEnable) {
-                            String shrapType = CSDirector.this.getString(parent_node + ".Shrapnel.Block_Type");
-                            int shrapAmount = CSDirector.this.getInt(parent_node + ".Shrapnel.Amount");
-                            int shrapSpeed = CSDirector.this.getInt(parent_node + ".Shrapnel.Speed");
-                            boolean placeBlocks = CSDirector.this.getBoolean(parent_node + ".Shrapnel.Place_Blocks");
+                            String shrapType = ConfigCache.getString(parent_node + ".Shrapnel.Block_Type");
+                            int shrapAmount = ConfigCache.getInt(parent_node + ".Shrapnel.Amount");
+                            int shrapSpeed = ConfigCache.getInt(parent_node + ".Shrapnel.Speed");
+                            boolean placeBlocks = ConfigCache.getBoolean(parent_node + ".Shrapnel.Place_Blocks");
                             String[] blockInfo = shrapType.split("~");
                             if (blockInfo.length < 2) {
                                 blockInfo = new String[]{blockInfo[0], "0"};
@@ -3058,12 +2298,12 @@ public class CSDirector extends JavaPlugin implements Listener {
                         WeaponExplodeEvent explodeEvent = new WeaponExplodeEvent(player, location, parent_node, false, false);
                         CSDirector.this.plugin.getServer().getPluginManager().callEvent(explodeEvent);
                         CSDirector.this.csminion.displayFireworks(objProj, parent_node, ".Fireworks.Firework_Explode");
-                        boolean ownerNoDam = CSDirector.this.getBoolean(parent_node + ".Explosions.Enable_Owner_Immunity");
-                        boolean noDam = CSDirector.this.getBoolean(parent_node + ".Explosions.Explosion_No_Damage");
-                        boolean frenFire = CSDirector.this.getBoolean(parent_node + ".Explosions.Enable_Friendly_Fire");
-                        boolean noGrief = CSDirector.this.getBoolean(parent_node + ".Explosions.Explosion_No_Grief");
-                        boolean isFire = CSDirector.this.getBoolean(parent_node + ".Explosions.Explosion_Incendiary");
-                        int boomRadius = CSDirector.this.getInt(parent_node + ".Explosions.Explosion_Radius");
+                        boolean ownerNoDam = ConfigCache.getBoolean(parent_node + ".Explosions.Enable_Owner_Immunity");
+                        boolean noDam = ConfigCache.getBoolean(parent_node + ".Explosions.Explosion_No_Damage");
+                        boolean frenFire = ConfigCache.getBoolean(parent_node + ".Explosions.Enable_Friendly_Fire");
+                        boolean noGrief = ConfigCache.getBoolean(parent_node + ".Explosions.Explosion_No_Grief");
+                        boolean isFire = ConfigCache.getBoolean(parent_node + ".Explosions.Explosion_Incendiary");
+                        int boomRadius = ConfigCache.getInt(parent_node + ".Explosions.Explosion_Radius");
                         if (boomRadius > 20) {
                             boomRadius = 20;
                         }
@@ -3103,19 +2343,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
     }
 
-    // Универсальная отложенная зачистка сущностей-снарядов и связанных метаданных.
-    public void prepareTermination(final Entity proj, final boolean remove, long delay) {
-        Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
-            public void run() {
-                if (remove) {
-                    proj.remove();
-                } else {
-                    proj.setVelocity(proj.getVelocity().multiply((double) 0.25F));
-                }
 
-            }
-        }, delay);
-    }
 
     @EventHandler
     // Сброс оружейного состояния при смене слота.
@@ -3128,12 +2356,20 @@ public class CSDirector extends JavaPlugin implements Listener {
         this.terminateReload(player);
         ItemStack heldItem = player.getInventory().getItem(event.getNewSlot());
         if (heldItem != null) {
-            String[] pc = this.itemParentNode(heldItem, player);
+            String[] pc = ItemUtils.itemParentNode(heldItem, player);
             if (pc == null || !Boolean.parseBoolean(pc[1])) {
                 return;
             }
 
             ItemStack weapon = this.csminion.vendingMachine(pc[0]);
+            if (weapon != null && ItemUtils.itemIsSafe(heldItem)) {
+                // Preserve the display name when replacing corrupted items to maintain ammo/reload state
+                ItemMeta meta = weapon.getItemMeta();
+                if (meta != null && heldItem.getItemMeta() != null) {
+                    meta.setDisplayName(heldItem.getItemMeta().getDisplayName());
+                    weapon.setItemMeta(meta);
+                }
+            }
             weapon.setAmount(player.getInventory().getItem(event.getNewSlot()).getAmount());
             player.getInventory().setItem(event.getNewSlot(), weapon);
         }
@@ -3176,13 +2412,13 @@ public class CSDirector extends JavaPlugin implements Listener {
             return;
         }
 
-        String[] weaponInfo = this.itemParentNode(item, event.getPlayer());
+        String[] weaponInfo = ItemUtils.itemParentNode(item, event.getPlayer());
         if (weaponInfo == null || weaponInfo.length == 0 || weaponInfo[0] == null) {
             return;
         }
 
         String parentNode = weaponInfo[0];
-        if (!this.getBoolean(parentNode + ".Item_Information.Prevent_Item_Break")) {
+        if (!ConfigCache.getBoolean(parentNode + ".Item_Information.Prevent_Item_Break")) {
             return;
         }
 
@@ -3204,10 +2440,10 @@ public class CSDirector extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
 
         ItemStack trash = event.getItemDrop().getItemStack();
-        String[] pc = this.itemParentNode(trash, event.getPlayer());
+        String[] pc = ItemUtils.itemParentNode(trash, event.getPlayer());
         if (pc != null) {
-            if (this.getBoolean(pc[0] + ".Reload.Enable")) {
-                if (!this.getBoolean(pc[0] + ".Reload.Reload_With_Mouse")) {
+            if (ConfigCache.getBoolean(pc[0] + ".Reload.Enable")) {
+                if (!ConfigCache.getBoolean(pc[0] + ".Reload.Reload_With_Mouse")) {
 
                     DropAttempt attempt = new DropAttempt(player);
                     this.last_drop.put(player.getUniqueId(), attempt);
@@ -3234,9 +2470,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         while (it.hasNext()) {
             ItemStack item = it.next();
-            if (item != null && this.itemIsSafe(item)) {
-                String[] parent_node = this.itemParentNode(item, player);
-                if (parent_node != null && this.getBoolean(parent_node[0] + ".Abilities.Death_No_Drop")) {
+            if (item != null && ItemUtils.itemIsSafe(item)) {
+                String[] parent_node = ItemUtils.itemParentNode(item, player);
+                if (parent_node != null && ConfigCache.getBoolean(parent_node[0] + ".Abilities.Death_No_Drop")) {
                     newInv.add(item);
                     it.remove();
                 }
@@ -3262,12 +2498,12 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         if (event.getEntity().getKiller() instanceof Player) {
             Player shooter = event.getEntity().getKiller();
-            String parent_node = this.returnParentNode(shooter);
+            String parent_node = ItemUtils.returnParentNode(shooter);
             if (parent_node == null) {
                 return;
             }
 
-            String msg = this.getString(parent_node + ".Custom_Death_Message.Normal");
+            String msg = ConfigCache.getString(parent_node + ".Custom_Death_Message.Normal");
             if (msg == null) {
                 return;
             }
@@ -3293,7 +2529,7 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
 
             if (event.getSlot() != -1 && currentItem != null) {
-                String[] pc = this.itemParentNode(currentItem, player);
+                String[] pc = ItemUtils.itemParentNode(currentItem, player);
                 if (pc == null) {
                     return;
                 }
@@ -3315,7 +2551,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             if (event.getSlot() == -999) {
                 ItemStack trash = event.getCursor();
-                String[] pc = this.itemParentNode(trash, player);
+                String[] pc = ItemUtils.itemParentNode(trash, player);
                 if (pc == null) {
                     return;
                 }
@@ -3364,7 +2600,7 @@ public class CSDirector extends JavaPlugin implements Listener {
             item = player.getInventory().getItemInHand();
         }
 
-        if (item != null && this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains(String.valueOf('ᴿ'))) {
+        if (item != null && ItemUtils.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains(String.valueOf('ᴿ'))) {
             String cleaner = item.getItemMeta().getDisplayName().replaceAll(String.valueOf('ᴿ'), "");
             if (no_slot) {
                 this.csminion.setItemName(player.getInventory().getItemInHand(), cleaner);
@@ -3377,9 +2613,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     public boolean switchedTheItem(Player player, String parent_node) {
         ItemStack item = player.getInventory().getItemInHand();
-        String attachType = this.getAttachment(parent_node, item)[0];
+        String attachType = WeaponAttachmentUtils.getAttachment(parent_node, item)[0];
         boolean attachment = attachType != null && attachType.equalsIgnoreCase("accessory");
-        return item == null || !this.itemIsSafe(item) || !attachment && this.isDifferentItem(item, parent_node);
+        return item == null || !ItemUtils.itemIsSafe(item) || !attachment && WeaponHelperUtils.isDifferentItem(item, parent_node);
     }
 
     // Останавливает все burst-задачи игрока.
@@ -3428,194 +2664,8 @@ public class CSDirector extends JavaPlugin implements Listener {
         player.removeMetadata(parentNode + "shootDelay" + gunSlot + false, this);
     }
 
-    // Считывает текущее число патронов прямо из display name оружия.
-    public int getAmmoBetweenBrackets(Player player, String parent_node, ItemStack item) {
-        boolean reloadEnable = this.getBoolean(parent_node + ".Reload.Enable");
-        boolean dualWield = this.isDualWield(player, parent_node, item);
-        int reloadAmt = this.getReloadAmount(player, parent_node, item);
-        String replacer = dualWield ? reloadAmt + " | " + reloadAmt : String.valueOf(reloadAmt);
-        if (dualWield) {
-            reloadAmt *= 2;
-        }
-
-        String attachType = this.getAttachment(parent_node, item)[0];
-        String bracketInfo = this.csminion.extractReading(item.getItemMeta().getDisplayName());
-        int detectedAmmo = reloadAmt;
-
-        try {
-            if (attachType != null) {
-                int[] ammoReading = this.grabDualAmmo(item, parent_node);
-                if (attachType.equalsIgnoreCase("main")) {
-                    detectedAmmo = ammoReading[0];
-                } else if (attachType.equalsIgnoreCase("accessory")) {
-                    detectedAmmo = ammoReading[1];
-                }
-            } else if (dualWield) {
-                String ammoReading = bracketInfo.replaceAll(" ", "");
-                String[] dualAmmo = ammoReading.split("\\|");
-                if (dualAmmo[0].equals(String.valueOf('×')) || dualAmmo[1].equals(String.valueOf('×'))) {
-                    return 125622;
-                }
-
-                detectedAmmo = Integer.parseInt(dualAmmo[0]) + Integer.parseInt(dualAmmo[1]);
-            } else {
-                if (bracketInfo.equals(String.valueOf('×')) && !reloadEnable) {
-                    return 125622;
-                }
-
-                detectedAmmo = Integer.parseInt(bracketInfo);
-            }
-        } catch (Exception e) {
-            this.csminion.replaceBrackets(item, replacer, parent_node);
-        }
-
-        if (detectedAmmo > reloadAmt) {
-            this.csminion.replaceBrackets(item, replacer, parent_node);
-        }
-
-        return detectedAmmo;
-    }
-
-    // Исполняет команды из конфига, подставляя shooter/victim/flight-time и прочие переменные.
-    public void executeCommands(LivingEntity player, String parentNode, String childNode, String shooterName, String vicName, String flightTime, String totalDmg, boolean console) {
-        String[] commandList = this.getString(parentNode + childNode).split("\\|");
-
-        for (String cmd : commandList) {
-            String parsed = this.variableParser(cmd.trim(), shooterName, vicName, flightTime, totalDmg);
-            if (parsed.isEmpty()) continue;
-            if (console) {
-                this.getServer().dispatchCommand(this.getServer().getConsoleSender(), this.variableParser(cmd, shooterName, vicName, flightTime, totalDmg));
-            } else {
-                ((Player) player).performCommand(this.variableParser(cmd, shooterName, vicName, flightTime, totalDmg));
-            }
-        }
-
-    }
-
-    public String variableParser(String filter, String shooter, String victim, String flightTime, String totalDmg) {
-        filter = filter.replaceAll("<shooter>", shooter).replaceAll("<victim>", victim).replaceAll("<damage>", totalDmg).replaceAll("<flight>", flightTime);
-        return filter;
-    }
-
-    // Отправляет игроку локализованное сообщение с подстановкой динамических значений.
-    public void sendPlayerMessage(LivingEntity player, String parentNode, String childNode, String shooterName, String vicName, String flightTime, String totalDmg) {
-        String message = this.getString(parentNode + childNode);
-        if (message != null) {
-            if (player instanceof Player) {
-                player.sendMessage(this.variableParser(message, shooterName, vicName, flightTime, totalDmg));
-            }
-
-        }
-    }
 
     // Спавнит дополнительных мобов/сущности по конфигу после попадания, смерти или взрыва.
-//    public boolean spawnEntities(LivingEntity player, String parentNode, String childNode, LivingEntity tamer) {
-//        if (!this.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Enable")) {
-//            return false;
-//        } else {
-//            String entName = this.getString(parentNode + ".Spawn_Entity_On_Hit.Mob_Name");
-//            String proType = this.getString(parentNode + ".Shooting.Projectile_Type");
-//            boolean targetVictim = this.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Make_Entities_Target_Victim");
-//            boolean noDrop = this.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Entity_Disable_Drops");
-//            int timedDeath = this.getInt(parentNode + ".Spawn_Entity_On_Hit.Timed_Death");
-//            int spawnChance = this.getInt(parentNode + ".Spawn_Entity_On_Hit.Chance");
-//            if (this.getString(parentNode + childNode) == null) {
-//                return false;
-//            } else if (proType.equalsIgnoreCase("energy")) {
-//                this.printM("For the weapon '" + parentNode + "', the 'energy' projectile-type does not support the Spawn_Entity_On_Hit module.");
-//                return false;
-//            } else {
-//                Random generator = new Random();
-//                int diceRoll = generator.nextInt(100);
-//                if (diceRoll > spawnChance) {
-//                    return false;
-//                } else {
-//                    String[] entList = this.getString(parentNode + childNode).split(",");
-//
-//                    for (String entity : entList) {
-//                        String spaceFilter = entity.replace(" ", "");
-//                        String[] args = spaceFilter.split("-");
-//                        if (args.length == 4) {
-//                            int entAmount = 0;
-//
-//                            try {
-//                                entAmount = Integer.parseInt(args[3]);
-//                            } catch (NumberFormatException var25) {
-//                                this.printM("'" + entAmount + "' in the node 'EntityType_Baby_Explode_Amount' of weapon '" + parentNode + "' is not a valid number!");
-//                                break;
-//                            }
-//
-//                            for (int i = 0; i < entAmount; ++i) {
-//                                String mobEnum = args[0].toUpperCase();
-//                                mobEnum = switch (args[0]) {
-//                                    case "ZOMBIE_VILLAGER" -> "ZOMBIE";
-//                                    case "WITHER_SKELETON" -> "SKELETON";
-//                                    case "TAMED_WOLF" -> "WOLF";
-//                                    default -> mobEnum;
-//                                };
-//
-//                                EntityType entType;
-//                                try {
-//                                    entType = EntityType.valueOf(mobEnum);
-//                                } catch (IllegalArgumentException e) {
-//                                    this.printM("'" + args[0] + "' of weapon '" + parentNode + "' is not a valid entity!");
-//                                    break;
-//                                }
-//
-//                                final LivingEntity spawnedMob = (LivingEntity) player.getWorld().spawnEntity(player.getLocation(), entType);
-//                                if (Boolean.parseBoolean(args[1])) {
-//                                    if (spawnedMob instanceof Zombie) {
-//                                        ((Zombie) spawnedMob).setBaby(true);
-//                                    } else if (spawnedMob instanceof Creeper) {
-//                                        ((Creeper) spawnedMob).setPowered(true);
-//                                    } else if (spawnedMob instanceof Ageable) {
-//                                        ((Ageable) spawnedMob).setBaby();
-//                                    }
-//                                }
-//
-//                                if (args[0].equalsIgnoreCase("ZOMBIE_VILLAGER")) {
-//                                    ((Zombie) spawnedMob).setVillager(true);
-//                                } else if (args[0].equalsIgnoreCase("WITHER_SKELETON")) {
-//                                    ((Skeleton) spawnedMob).setSkeletonType(SkeletonType.WITHER);
-//                                } else if (args[0].equalsIgnoreCase("TAMED_WOLF") && tamer instanceof AnimalTamer) {
-//                                    ((Wolf) spawnedMob).setOwner((AnimalTamer) tamer);
-//                                }
-//
-//                                if (entName != null) {
-//                                    spawnedMob.setCustomName(entName);
-//                                    spawnedMob.setCustomNameVisible(true);
-//                                }
-//
-//                                if (Boolean.parseBoolean(args[2])) {
-//                                    spawnedMob.setMetadata("CS_Boomer", new FixedMetadataValue(this, true));
-//                                }
-//
-//                                if (noDrop) {
-//                                    spawnedMob.setMetadata("CS_NoDrops", new FixedMetadataValue(this, true));
-//                                }
-//
-//                                if (targetVictim) {
-//                                    spawnedMob.damage(0.0F, player);
-//                                }
-//
-//                                if (timedDeath != 0) {
-//                                    Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
-//                                        public void run() {
-//                                            spawnedMob.damage(400.0F);
-//                                        }
-//                                    }, (long) timedDeath);
-//                                }
-//                            }
-//                        } else {
-//                            this.printM("'" + spaceFilter + "' of weapon '" + parentNode + "' has an invalid format!");
-//                        }
-//                    }
-//
-//                    return true;
-//                }
-//            }
-//        }
-//    }
     public boolean spawnEntities(
             LivingEntity player,
             String parentNode,
@@ -3623,12 +2673,11 @@ public class CSDirector extends JavaPlugin implements Listener {
             LivingEntity tamer
     ) {
 
-        if (!getBoolean(parentNode + ".Spawn_Entity_On_Hit.Enable")) {
+        if (!ConfigCache.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Enable")) {
             return false;
         }
 
-        String projectileType =
-                getString(parentNode + ".Shooting.Projectile_Type");
+        String projectileType = ConfigCache.getString(parentNode + ".Shooting.Projectile_Type");
 
         if ("energy".equalsIgnoreCase(projectileType)) {
 
@@ -3640,31 +2689,25 @@ public class CSDirector extends JavaPlugin implements Listener {
             return false;
         }
 
-        String entitiesString =
-                getString(parentNode + childNode);
+        String entitiesString = ConfigCache.getString(parentNode + childNode);
 
         if (entitiesString == null) {
             return false;
         }
 
-        int spawnChance =
-                getInt(parentNode + ".Spawn_Entity_On_Hit.Chance");
+        int spawnChance = ConfigCache.getInt(parentNode + ".Spawn_Entity_On_Hit.Chance");
 
         if (ThreadLocalRandom.current().nextInt(100) > spawnChance) {
             return false;
         }
 
-        String customName =
-                getString(parentNode + ".Spawn_Entity_On_Hit.Mob_Name");
+        String customName = ConfigCache.getString(parentNode + ".Spawn_Entity_On_Hit.Mob_Name");
 
-        boolean targetVictim =
-                getBoolean(parentNode + ".Spawn_Entity_On_Hit.Make_Entities_Target_Victim");
+        boolean targetVictim = ConfigCache.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Make_Entities_Target_Victim");
 
-        boolean noDrops =
-                getBoolean(parentNode + ".Spawn_Entity_On_Hit.Entity_Disable_Drops");
+        boolean noDrops = ConfigCache.getBoolean(parentNode + ".Spawn_Entity_On_Hit.Entity_Disable_Drops");
 
-        int timedDeath =
-                getInt(parentNode + ".Spawn_Entity_On_Hit.Timed_Death");
+        int timedDeath = ConfigCache.getInt(parentNode + ".Spawn_Entity_On_Hit.Timed_Death");
 
         for (String rawData : entitiesString.split(",")) {
 
@@ -3673,40 +2716,19 @@ public class CSDirector extends JavaPlugin implements Listener {
             try {
                 data = SpawnEntityParser.parse(rawData);
             } catch (Exception ex) {
-
-                printM(
-                        "Invalid entity format '" +
-                                rawData +
-                                "' in weapon '" +
-                                parentNode +
-                                "'"
-                );
-
+                printM("Invalid entity format '" + rawData + "' in weapon '" + parentNode + "'");
                 continue;
             }
 
             for (int i = 0; i < data.getAmount(); i++) {
 
-                LivingEntity mob = entityFactory.create(
-                        player.getWorld(),
-                        player.getLocation(),
-                        data
-                );
+                LivingEntity mob = entityFactory.create(player.getWorld(), player.getLocation(), data);
 
-                EntityConfigurator.configure(
-                        mob,
-                        data,
-                        tamer instanceof AnimalTamer
-                                ? (AnimalTamer) tamer
-                                : null,
-                        customName
-                );
+                EntityConfigurator.configure(mob, data, tamer instanceof AnimalTamer ? (AnimalTamer) tamer : null, customName);
 
                 if (noDrops) {
-                    mob.setMetadata(
-                            "CS_NoDrops",
-                            new FixedMetadataValue(this, true)
-                    );
+                    mob.setMetadata("CS_NoDrops", new FixedMetadataValue(this, true)
+                );
                 }
 
                 if (targetVictim) {
@@ -3715,11 +2737,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                 if (timedDeath > 0) {
 
-                    Bukkit.getScheduler().runTaskLater(
-                            this,
-                            () -> mob.damage(400.0D),
-                            timedDeath
-                    );
+                    Bukkit.getScheduler().runTaskLater(this, () -> mob.damage(400.0D), timedDeath);
                 }
             }
         }
@@ -3757,13 +2775,13 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
 
             for (String parent_node : this.parentlist.values()) {
-                if (this.getBoolean(parent_node + ".SignShops.Enable")) {
+                if (ConfigCache.getBoolean(parent_node + ".SignShops.Enable")) {
                     if (!event.getPlayer().hasPermission("crackshot.shops." + parent_node) && !event.getPlayer().hasPermission("crackshot.shops.all")) {
                         CSMessages.sendMessage(event.getPlayer(), this.heading, Message.NP_STORE_CREATE.getMessage());
                         return;
                     }
 
-                    int gunID = this.getInt(parent_node + ".SignShops.Sign_Gun_ID");
+                    int gunID = ConfigCache.getInt(parent_node + ".SignShops.Sign_Gun_ID");
                     if (gunID != 0 && gunID == Integer.parseInt(filter)) {
                         event.setLine(0, "§fStore No᎐ " + gunID);
                         CSMessages.sendMessage(event.getPlayer(), this.heading, Message.STORE_CREATED.getMessage());
@@ -3784,10 +2802,10 @@ public class CSDirector extends JavaPlugin implements Listener {
             String signLineOne = signState.getLine(0).replaceAll("§fStore No᎐ ", "");
 
             for (String parentNode : this.parentlist.values()) {
-                if (this.getBoolean(parentNode + ".SignShops.Enable")
-                        && this.getString(parentNode + ".SignShops.Price") != null) {
-                    int gunID = this.getInt(parentNode + ".SignShops.Sign_Gun_ID");
-                    String priceInfo = this.getString(parentNode + ".SignShops.Price");
+                if (ConfigCache.getBoolean(parentNode + ".SignShops.Enable")
+                        && ConfigCache.getString(parentNode + ".SignShops.Price") != null) {
+                    int gunID = ConfigCache.getInt(parentNode + ".SignShops.Sign_Gun_ID");
+                    String priceInfo = ConfigCache.getString(parentNode + ".SignShops.Price");
 
                     String[] signInfo = priceInfo.split("-");
 
@@ -3823,7 +2841,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                             } else if (player.getInventory().firstEmpty() != -1) {
                                 this.csminion.removeNamedItem(player, signInfo[0], amount, parentNode, true);
                                 this.csminion.getWeaponCommand(player, parentNode, false, (String) null, false, false);
-                                String milk = this.getString(parentNode + ".Item_Information.Item_Name");
+                                String milk = ConfigCache.getString(parentNode + ".Item_Information.Item_Name");
                                 CSMessages.sendMessage(player, this.heading, Message.STORE_PURCHASED.getMessage(milk));
                                 retVal = true;
                             }
@@ -3840,8 +2858,8 @@ public class CSDirector extends JavaPlugin implements Listener {
     // Проверка текущего положения затвора/механики перед выстрелом.
     public boolean checkBoltPosition(Player player, String parent_node) {
         ItemStack item = player.getInventory().getItemInHand();
-        String actType = this.getString(parent_node + ".Firearm_Action.Type");
-        if (actType != null && !this.isDualWield(player, parent_node, item)) {
+        String actType = ConfigCache.getString(parent_node + ".Firearm_Action.Type");
+        if (actType != null && !WeaponHelperUtils.isDualWield(player, parent_node, item)) {
             String[] validTypes = new String[]{"bolt", "lever", "pump", "break", "revolver", "slide"};
 
             for (String str : validTypes) {
@@ -3855,9 +2873,9 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
             }
 
-            int openTime = this.getInt(parent_node + ".Firearm_Action.Open_Duration");
-            int closeTime = this.getInt(parent_node + ".Firearm_Action.Close_Duration");
-            if (!this.itemIsSafe(item)) {
+            int openTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Open_Duration");
+            int closeTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Close_Duration");
+            if (!ItemUtils.itemIsSafe(item)) {
                 return false;
             } else {
                 String itemName = item.getItemMeta().getDisplayName();
@@ -3869,7 +2887,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                     this.csminion.setItemName(item, itemName.substring(0, chamberPos) + '▪' + itemName.substring(chamberPos + 1));
                 }
 
-                int detectedAmmo = this.getAmmoBetweenBrackets(player, parent_node, item);
+                int detectedAmmo = AmmoUtils.getAmmoBetweenBrackets(player, parent_node, item);
                 if (!actType.toLowerCase().contains("break") && !actType.toLowerCase().contains("revolver") && !actType.toLowerCase().contains("slide")) {
                     boolean chamberFired = chamber == 9642;
                     boolean chamberOpened = chamber == 727;
@@ -3888,11 +2906,11 @@ public class CSDirector extends JavaPlugin implements Listener {
                     }
                 } else {
                     this.reloadAnimation(player, parent_node);
-                    boolean ammoEnable = this.getBoolean(parent_node + ".Ammo.Enable");
-                    String ammoInfo = this.getString(parent_node + ".Ammo.Ammo_Item_ID");
-                    boolean takeAmmo = this.getBoolean(parent_node + ".Reload.Take_Ammo_On_Reload");
+                    boolean ammoEnable = ConfigCache.getBoolean(parent_node + ".Ammo.Enable");
+                    String ammoInfo = ConfigCache.getString(parent_node + ".Ammo.Ammo_Item_ID");
+                    boolean takeAmmo = ConfigCache.getBoolean(parent_node + ".Reload.Take_Ammo_On_Reload");
                     if (ammoEnable && takeAmmo && !this.csminion.containsItemStack(player, ammoInfo, 1, parent_node)) {
-                        this.playSoundEffects(player, parent_node, ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
+                        SoundUtils.playSoundEffects(player, parent_node, ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
                     }
 
                     return true;
@@ -3905,8 +2923,8 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     // Запускает анимацию и тайминг bolt/lever/pump/slide/revolver/break.
     public void correctBoltPosition(final Player player, final String parent_node, final boolean boltPull, int delay, final boolean reloadPrep, final boolean reloadFin, final boolean pumpExit, final boolean breakAct) {
-        final String actType = this.getString(parent_node + ".Firearm_Action.Type");
-        if (actType != null && !this.isDualWield(player, parent_node, player.getItemInHand())) {
+        final String actType = ConfigCache.getString(parent_node + ".Firearm_Action.Type");
+        if (actType != null && !WeaponHelperUtils.isDualWield(player, parent_node, player.getItemInHand())) {
             String[] validTypes = new String[]{"bolt", "lever", "pump", "break", "revolver", "slide"};
 
             for (String str : validTypes) {
@@ -3928,11 +2946,11 @@ public class CSDirector extends JavaPlugin implements Listener {
                         player.removeMetadata("fiddling", CSDirector.this.plugin);
                         ItemStack item = player.getInventory().getItemInHand();
                         int currentSlot = player.getInventory().getHeldItemSlot();
-                        int closeTime = CSDirector.this.getInt(parent_node + ".Firearm_Action.Close_Duration");
-                        int closeShootDelay = CSDirector.this.getInt(parent_node + ".Firearm_Action.Close_Shoot_Delay");
-                        if (CSDirector.this.itemIsSafe(item)) {
+                        int closeTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Close_Duration");
+                        int closeShootDelay = ConfigCache.getInt(parent_node + ".Firearm_Action.Close_Shoot_Delay");
+                        if (ItemUtils.itemIsSafe(item)) {
                             String itemName = item.getItemMeta().getDisplayName();
-                            if (!CSDirector.this.isDifferentItem(item, parent_node)) {
+                            if (!WeaponHelperUtils.isDifferentItem(item, parent_node)) {
                                 int chamberPos = itemName.lastIndexOf("§") + 3;
                                 char chamber = itemName.charAt(chamberPos);
                                 if (chamber == 171) {
@@ -3946,7 +2964,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                                     boolean isCocked = reloadFin && chamber == 9642;
                                     if (!isAttachment && !isReloading && !switchedItems && !isCocked) {
                                         if (breakAct) {
-                                            CSDirector.this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
+                                            SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
                                             CSDirector.this.csminion.setItemName(item, itemName.replaceAll("▫", "▪"));
                                             CSDirector.this.reloadShootDelay(player, parent_node, currentSlot, closeShootDelay, "noShooting");
                                         } else if (pumpExit && chamber == 9643) {
@@ -3964,8 +2982,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                 CSDirector.this.csminion.setItemName(item, nameToSet);
                                             }
 
-                                            int reloadOpenDelay = CSDirector.this.getInt(parent_node + ".Firearm_Action.Reload_Open_Delay");
-                                            CSDirector.this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", reloadOpenDelay > 0, (Location) null);
+                                            int reloadOpenDelay = ConfigCache.getInt(parent_node + ".Firearm_Action.Reload_Open_Delay");
+                                            SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", reloadOpenDelay > 0, (Location) null);
                                             if (reloadOpenDelay > 0) {
                                                 CSDirector.this.delayedReload(player, parent_node, Long.valueOf((long) reloadOpenDelay));
                                                 CSDirector.this.reloadShootDelay(player, parent_node, currentSlot, reloadOpenDelay, "noShooting");
@@ -3975,7 +2993,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                                         } else {
                                             if (boltPull) {
-                                                CSDirector.this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", false, (Location) null);
+                                                SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", false, (Location) null);
                                                 CSDirector.this.csminion.setItemName(item, itemName.replaceAll("▫", "˗"));
                                                 CSDirector.this.correctBoltPosition(player, parent_node, false, closeTime, false, false, false, false);
                                             } else if (actType.equalsIgnoreCase("slide") && (chamber == 9643 || chamber == 727)) {
@@ -3985,13 +3003,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                                                     CSDirector.this.csminion.setItemName(item, itemName.replaceAll("˗", "▪"));
                                                 }
 
-                                                CSDirector.this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
+                                                SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
                                                 CSDirector.this.reloadShootDelay(player, parent_node, currentSlot, closeShootDelay, "noShooting");
                                             } else {
-                                                int detectedAmmo = CSDirector.this.getAmmoBetweenBrackets(player, parent_node, item);
+                                                int detectedAmmo = AmmoUtils.getAmmoBetweenBrackets(player, parent_node, item);
                                                 if (detectedAmmo > 0) {
                                                     CSDirector.this.csminion.setItemName(item, itemName.replaceAll("˗", "▪"));
-                                                    CSDirector.this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
+                                                    SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Close", false, (Location) null);
                                                     CSDirector.this.reloadShootDelay(player, parent_node, currentSlot, closeShootDelay, "noShooting");
                                                     if (detectedAmmo != 125622) {
                                                         CSDirector.this.ammoOperation(player, parent_node, detectedAmmo, item);
@@ -4014,9 +3032,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     // Обновляет патроны на оружии и списывает ammo в зависимости от режима стрельбы.
     public void ammoOperation(Player player, String parent_node, int detectedAmmo, ItemStack item) {
-        boolean ammoEnable = this.getBoolean(parent_node + ".Ammo.Enable");
-        String ammoInfo = this.getString(parent_node + ".Ammo.Ammo_Item_ID");
-        boolean takeAmmo = this.getBoolean(parent_node + ".Ammo.Take_Ammo_Per_Shot");
+        boolean ammoEnable = ConfigCache.getBoolean(parent_node + ".Ammo.Enable");
+        String ammoInfo = ConfigCache.getString(parent_node + ".Ammo.Ammo_Item_ID");
+        boolean takeAmmo = ConfigCache.getBoolean(parent_node + ".Ammo.Take_Ammo_Per_Shot");
         --detectedAmmo;
         this.csminion.replaceBrackets(item, String.valueOf(detectedAmmo), parent_node);
         if (ammoEnable && takeAmmo) {
@@ -4024,9 +3042,9 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
 
         if (detectedAmmo == 0) {
-            String actType = this.getString(parent_node + ".Firearm_Action.Type");
-            this.playSoundEffects(player, parent_node, ".Reload.Sounds_Out_Of_Ammo", false, (Location) null);
-            if (!this.itemIsSafe(item)) {
+            String actType = ConfigCache.getString(parent_node + ".Firearm_Action.Type");
+            SoundUtils.playSoundEffects(player, parent_node, ".Reload.Sounds_Out_Of_Ammo", false, (Location) null);
+            if (!ItemUtils.itemIsSafe(item)) {
                 return;
             }
 
@@ -4035,9 +3053,9 @@ public class CSDirector extends JavaPlugin implements Listener {
                 if (!actType.equalsIgnoreCase("bolt") && !actType.equalsIgnoreCase("lever") && !actType.equalsIgnoreCase("pump")) {
                     if (actType.equalsIgnoreCase("break") || actType.equalsIgnoreCase("revolver") || actType.equalsIgnoreCase("slide")) {
                         if (actType.toLowerCase().contains("slide") && itemName.contains("▪")) {
-                            int openTime = this.getInt(parent_node + ".Firearm_Action.Open_Duration");
+                            int openTime = ConfigCache.getInt(parent_node + ".Firearm_Action.Open_Duration");
                             if (openTime < 1) {
-                                this.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", false, (Location) null);
+                                SoundUtils.playSoundEffects(player, parent_node, ".Firearm_Action.Sound_Open", false, (Location) null);
                             }
 
                             this.csminion.setItemName(item, itemName.replaceAll("▪", "▫"));
@@ -4057,14 +3075,14 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     // Частный случай ammoOperation для dual wield и нестандартных схем расхода патронов.
     public boolean ammoSpecOps(Player player, String parentNode, int detectedAmmo, ItemStack item, boolean leftClick) {
-        boolean ammoEnable = this.getBoolean(parentNode + ".Ammo.Enable");
-        boolean takeAmmo = this.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
-        String ammoInfo = this.getString(parentNode + ".Ammo.Ammo_Item_ID");
-        int[] ammoReading = this.grabDualAmmo(item, parentNode);
+        boolean ammoEnable = ConfigCache.getBoolean(parentNode + ".Ammo.Enable");
+        boolean takeAmmo = ConfigCache.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
+        String ammoInfo = ConfigCache.getString(parentNode + ".Ammo.Ammo_Item_ID");
+        int[] ammoReading = AmmoUtils.grabDualAmmo(item, parentNode);
         int ammoAmount;
         if (leftClick) {
             if (ammoReading[0] <= 0) {
-                this.playSoundEffects(player, parentNode, ".Reload.Dual_Wield.Sounds_Shoot_With_No_Ammo", false, (Location) null);
+                SoundUtils.playSoundEffects(player, parentNode, ".Reload.Dual_Wield.Sounds_Shoot_With_No_Ammo", false, (Location) null);
                 return false;
             }
 
@@ -4072,7 +3090,7 @@ public class CSDirector extends JavaPlugin implements Listener {
             this.csminion.replaceBrackets(item, ammoAmount + " | " + ammoReading[1], parentNode);
         } else {
             if (ammoReading[1] <= 0) {
-                this.playSoundEffects(player, parentNode, ".Reload.Dual_Wield.Sounds_Shoot_With_No_Ammo", false, (Location) null);
+                SoundUtils.playSoundEffects(player, parentNode, ".Reload.Dual_Wield.Sounds_Shoot_With_No_Ammo", false, (Location) null);
                 return false;
             }
 
@@ -4081,7 +3099,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
 
         if (ammoAmount <= 0) {
-            this.playSoundEffects(player, parentNode, ".Reload.Sounds_Out_Of_Ammo", false, (Location) null);
+            SoundUtils.playSoundEffects(player, parentNode, ".Reload.Sounds_Out_Of_Ammo", false, (Location) null);
         }
 
         if (ammoEnable && takeAmmo) {
@@ -4095,42 +3113,13 @@ public class CSDirector extends JavaPlugin implements Listener {
         return true;
     }
 
-    // Читает боезапас для обоих стволов из общего display name dual wield оружия.
-    public int[] grabDualAmmo(ItemStack item, String parentNode) {
-        try {
-            String strInBracks = this.csminion.extractReading(item.getItemMeta().getDisplayName());
-            String[] dualAmmo = strInBracks.split(" ");
-            if (dualAmmo.length != 3) {
-                this.csminion.resetItemName(item, parentNode);
-                strInBracks = this.csminion.extractReading(item.getItemMeta().getDisplayName());
-                dualAmmo = strInBracks.split(" ");
-            }
 
-            int leftGun;
-            if (dualAmmo[0].equals(String.valueOf('×'))) {
-                leftGun = 1;
-            } else {
-                leftGun = Integer.valueOf(dualAmmo[0]);
-            }
-
-            int rightGun;
-            if (dualAmmo[2].equals(String.valueOf('×'))) {
-                rightGun = 1;
-            } else {
-                rightGun = Integer.valueOf(dualAmmo[2]);
-            }
-
-            return new int[]{leftGun, rightGun};
-        } catch (NumberFormatException var7) {
-            return new int[2];
-        }
-    }
 
     @EventHandler
     public void explosiveTipCrossbow(EntityShootBowEvent event) {
         if (event.getEntity() instanceof Player && event.getForce() == 1.0F) {
             Player shooter = (Player) event.getEntity();
-            String parentNode = this.returnParentNode(shooter);
+            String parentNode = ItemUtils.returnParentNode(shooter);
             if (parentNode == null) {
                 return;
             }
@@ -4145,117 +3134,17 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     }
 
-    public String isSkipNameItem(ItemStack item) {
-        String itemInfo = item.getType() + "-" + item.getDurability();
-        return this.convIDs.get(itemInfo);
-    }
 
-    public String convItem(ItemStack item) {
-        String retNode = this.isSkipNameItem(item);
-        if (retNode == null && item.hasItemMeta() && item.getItemMeta().hasEnchants()) {
-            Map<Enchantment, Integer> enchList = item.getEnchantments();
 
-            for (String parentNode : this.enchlist.keySet()) {
-                String[] enchInfo = (String[]) this.enchlist.get(parentNode);
-                Enchantment givenEnch = Enchantment.getByName(enchInfo[0]);
-                int enchLevel = Integer.valueOf(enchInfo[1]);
-                ItemStack comp = this.csminion.parseItemStack(this.getString(parentNode + ".Item_Information.Item_Type"));
-                boolean equal = comp != null && comp.getType() == item.getType() && (comp.getDurability() == item.getDurability() || this.hasDurab(parentNode));
-                if (equal && enchList.containsKey(givenEnch) && (Integer) enchList.get(givenEnch) == enchLevel) {
-                    retNode = parentNode;
-                    break;
-                }
-            }
-        }
 
-        return retNode;
-    }
 
-    // Преобразует окрашенное имя предмета в нормализованную форму для сопоставления с parent_node.
-    public String toDisplayForm(String itemName) {
-        ItemMeta meta = (new ItemStack(Material.DIRT)).getItemMeta();
-        meta.setDisplayName(itemName);
-        return meta.getDisplayName();
-    }
 
-    public String getPureName(String itemName) {
-        int nameLength = itemName.length() - 1;
-        int lastIndex = itemName.lastIndexOf("§");
-        if (lastIndex != -1 && lastIndex + 2 <= nameLength) {
-            itemName = itemName.substring(0, lastIndex + 2);
-        }
-
-        return this.toDisplayForm(itemName);
-    }
-
-    // Определяет parent_node оружия по предмету в руке игрока.
-    public String returnParentNode(Player player) {
-        String retNode = null;
-        ItemStack item = player.getItemInHand();
-        if (item == null) {
-            return null;
-        } else {
-            if (this.itemIsSafe(item)) {
-                String parentNode = this.isSkipNameItem(item);
-                if (parentNode == null) {
-                    parentNode = this.parentlist.get(this.getPureName(item.getItemMeta().getDisplayName()));
-                }
-
-                if (parentNode != null) {
-                    if (player.getItemInHand().getItemMeta().getDisplayName().contains(String.valueOf('▶'))) {
-                        String attachInfo = this.getAttachment(parentNode, item)[1];
-                        retNode = attachInfo;
-                    } else {
-                        retNode = parentNode;
-                    }
-                }
-            } else {
-                String convNode = this.convItem(item);
-                if (convNode != null && this.regionAndPermCheck(player, convNode, true)) {
-                    this.csminion.removeEnchantments(item);
-                    ItemStack weapon = this.csminion.vendingMachine(convNode);
-                    weapon.setAmount(player.getItemInHand().getAmount());
-                    player.setItemInHand(weapon);
-                }
-            }
-
-            return retNode;
-        }
-    }
-
-    // Пытается определить оружие по ItemStack, включая skip-name режим и проверки enchant/display.
-    public String[] itemParentNode(ItemStack item, Player player) {
-        String[] retVal = null;
-        if (this.itemIsSafe(item)) {
-            String parentNode = this.isSkipNameItem(item);
-            if (parentNode == null) {
-                parentNode = this.parentlist.get(this.getPureName(item.getItemMeta().getDisplayName()));
-            }
-
-            if (parentNode != null) {
-                if (item.getItemMeta().getDisplayName().contains(String.valueOf('▶'))) {
-                    String attachInfo = this.getAttachment(parentNode, item)[1];
-                    retVal = new String[]{attachInfo, "false"};
-                } else {
-                    retVal = new String[]{parentNode, "false"};
-                }
-            }
-        } else {
-            String convNode = this.convItem(item);
-            if (convNode != null && player != null && this.regionAndPermCheck(player, convNode, true)) {
-                this.csminion.removeEnchantments(item);
-                retVal = new String[]{convNode, "true"};
-            }
-        }
-
-        return retVal;
-    }
 
     @EventHandler
     // Проверка крафта оружия и боеприпасов по правилам плагина.
     public void onCraft(CraftItemEvent event) {
         for (String parent_node : this.parentlist.values()) {
-            if (this.getBoolean(parent_node + ".Crafting.Enable")) {
+            if (ConfigCache.getBoolean(parent_node + ".Crafting.Enable")) {
                 ItemStack weapon = this.csminion.vendingMachine(parent_node);
                 if (event.getRecipe().getResult().isSimilar(weapon)) {
                     if (event.getWhoClicked() instanceof Player) {
@@ -4276,31 +3165,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         System.out.println("[CrackShot] " + msg);
     }
 
-    public double getDouble(String nodes) {
-        Double result = dubs.get(nodes);
-        return result != null ? result : (double) 0.0F;
-    }
 
-    public double getConfigDouble(String nodes, double defaultValue) {
-        if (this.weaponConfig != null && this.weaponConfig.isDouble(nodes)) {
-            return this.weaponConfig.getDouble(nodes);
-        }
-        if (this.weaponConfig != null && this.weaponConfig.isInt(nodes)) {
-            return this.weaponConfig.getInt(nodes);
-        }
-
-        return defaultValue;
-    }
-
-    public boolean getBoolean(String nodes) {
-        Boolean result = bools.get(nodes);
-        return result != null ? result : false;
-    }
-
-    public int getInt(String nodes) {
-        Integer result = ints.get(nodes);
-        return result != null ? result : 0;
-    }
 
     public Integer getCustomModelData(String parentNode) {
         String[] supportedPaths = {
@@ -4323,45 +3188,12 @@ public class CSDirector extends JavaPlugin implements Listener {
         return null;
     }
 
-    public String getString(String nodes) {
-        String result = strings.get(nodes);
-        return result != null ? result : null;
-    }
-
     public boolean hasDurab(String nodes) {
         Boolean result = this.morobust.get(nodes);
         return result != null ? result : false;
     }
 
-    private void applyAbilityKnockback(LivingEntity victim, Entity attacker, String parentNode, int knockBack) {
-        if (knockBack == 0 || attacker == null) {
-            return;
-        }
 
-//        String knockbackMode = this.getString(parentNode + ".Abilities.Knockback_Mode");
-//        if (knockbackMode != null && knockbackMode.equalsIgnoreCase("VIEW")) {
-        double factorX = this.getConfigDouble(parentNode + ".Abilities.Knockback_View_X", 1.0D);
-        double factorY = this.getConfigDouble(parentNode + ".Abilities.Knockback_View_Y", 1.0D);
-        double factorZ = this.getConfigDouble(parentNode + ".Abilities.Knockback_View_Z", 1.0D);
-        Vector viewDirection;
-        if (attacker instanceof LivingEntity) {
-            viewDirection = ((LivingEntity) attacker).getEyeLocation().getDirection().normalize();
-        } else {
-            viewDirection = attacker.getLocation().getDirection().normalize();
-        }
-
-        Vector velocity = new Vector(
-                viewDirection.getX() * knockBack * factorX,
-                viewDirection.getY() * knockBack * factorY,
-                viewDirection.getZ() * knockBack * factorZ
-        );
-        victim.setVelocity(velocity);
-        return;
-//        }
-
-//        Vector vector = this.csminion.getAlignedDirection(attacker.getLocation(), victim.getLocation());
-//        victim.setVelocity(vector.multiply((double) knockBack * 0.1D));
-    }
 
     // Единая проверка: можно ли игроку использовать оружие в регионе и по permission.
     public boolean regionAndPermCheck(Player shooter, String parentNode, boolean noMsg) {
@@ -4383,8 +3215,8 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             return false;
         } else if (!shooter.hasPermission("crackshot.bypass." + parentNode) && !shooter.hasPermission("crackshot.bypass.all") && !this.csminion.regionCheck(shooter, parentNode)) {
-            if (!noMsg && this.getString(parentNode + ".Region_Check.Message_Of_Denial") != null) {
-                shooter.sendMessage(this.getString(parentNode + ".Region_Check.Message_Of_Denial"));
+            if (!noMsg && ConfigCache.getString(parentNode + ".Region_Check.Message_Of_Denial") != null) {
+                shooter.sendMessage(ConfigCache.getString(parentNode + ".Region_Check.Message_Of_Denial"));
             }
 
             return false;
@@ -4401,36 +3233,21 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     }
 
-    private ProjectileSubtypeData parseProjectileSubtype(String parentNode) {
-        String raw = this.getString(parentNode + ".Shooting.Projectile_Subtype");
-        if (raw == null) {
-            return null;
-        }
 
-        if (raw.equalsIgnoreCase("true") || raw.equalsIgnoreCase("false")) {
-            return ProjectileSubtypeParser.parseBoolean(raw);
-        }
-
-        if (raw.contains("-")) {
-            return ProjectileSubtypeParser.parseNumeric(raw, parentNode);
-        }
-
-        return ProjectileSubtypeParser.parseItem(raw, parentNode, this);
-    }
 
     // Бросает grenade/flare/bомbleт с задержкой активации и метаданными CrackShot.
     public void launchGrenade(final Player player, final String parent_node, int delay, Vector vel, Location splitLoc, final int cTimes) {
-        boolean cEnable = this.getBoolean(parent_node + ".Cluster_Bombs.Enable");
-        int cOfficialTimes = this.getInt(parent_node + ".Cluster_Bombs.Number_Of_Splits");
-        String itemType = this.getString(parent_node + ".Shooting.Projectile_Subtype");
+        boolean cEnable = ConfigCache.getBoolean(parent_node + ".Cluster_Bombs.Enable");
+        int cOfficialTimes = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Number_Of_Splits");
+        String itemType = ConfigCache.getString(parent_node + ".Shooting.Projectile_Subtype");
         String nodeName = "Projectile_Subtype:";
         ProjectileSubtypeData projectileSubtypeData = null;
 
         if (cEnable && cTimes != 0) {
             nodeName = "Bomblet_Type:";
-            itemType = this.getString(parent_node + ".Cluster_Bombs.Bomblet_Type");
+            itemType = ConfigCache.getString(parent_node + ".Cluster_Bombs.Bomblet_Type");
         } else if (itemType != null) {
-            projectileSubtypeData = this.parseProjectileSubtype(parent_node);
+            projectileSubtypeData = ProjectileSubtypeParser.parseProjectileSubtype(parent_node);
         }
 
         if (itemType == null) {
@@ -4463,13 +3280,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                 ItemStack grenStack = grenade.getItemStack();
                 this.csminion.setItemName(grenStack, "૮" + grenade.getUniqueId());
                 grenade.setItemStack(grenStack);
-                this.callShootEvent(player, grenade, parent_node);
-                final boolean airstrike = this.getBoolean(parent_node + ".Airstrikes.Enable");
-                int cDelay = this.getInt(parent_node + ".Cluster_Bombs.Delay_Before_Split");
-                int cDelayDiff = this.getInt(parent_node + ".Cluster_Bombs.Detonation_Delay_Variation");
+                ProjectileUtils.callShootEvent(player, grenade, parent_node);
+                final boolean airstrike = ConfigCache.getBoolean(parent_node + ".Airstrikes.Enable");
+                int cDelay = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Delay_Before_Split");
+                int cDelayDiff = ConfigCache.getInt(parent_node + ".Cluster_Bombs.Detonation_Delay_Variation");
                 if (cEnable && !airstrike && cTimes < cOfficialTimes) {
                     if (cTimes == 0) {
-                        this.playSoundEffects(grenade, parent_node, ".Shooting.Sounds_Projectile", false, (Location) null);
+                        SoundUtils.playSoundEffects(grenade, parent_node, ".Shooting.Sounds_Projectile", false, (Location) null);
                     }
 
                     delay = cDelay;
@@ -4479,13 +3296,13 @@ public class CSDirector extends JavaPlugin implements Listener {
                         delay += r.nextInt(cDelayDiff) - r.nextInt(cDelayDiff);
                     }
                 } else {
-                    this.playSoundEffects(grenade, parent_node, ".Shooting.Sounds_Projectile", false, (Location) null);
+                    SoundUtils.playSoundEffects(grenade, parent_node, ".Shooting.Sounds_Projectile", false, (Location) null);
                 }
 
                 Bukkit.getScheduler().scheduleSyncDelayedTask(this, new Runnable() {
                     public void run() {
-                        boolean zapEnable = CSDirector.this.getBoolean(parent_node + ".Lightning.Enable");
-                        boolean zapNoDam = CSDirector.this.getBoolean(parent_node + ".Lightning.No_Damage");
+                        boolean zapEnable = ConfigCache.getBoolean(parent_node + ".Lightning.Enable");
+                        boolean zapNoDam = ConfigCache.getBoolean(parent_node + ".Lightning.No_Damage");
                         if (!airstrike) {
                             if (zapEnable) {
                                 CSDirector.this.csminion.projectileLightning(grenade.getLocation(), zapNoDam);
@@ -4508,13 +3325,13 @@ public class CSDirector extends JavaPlugin implements Listener {
         if (event.getEntity() instanceof Player && event.getCause() == DamageCause.FALL) {
             Player shooter = (Player) event.getEntity();
             ItemStack heldItem = shooter.getItemInHand();
-            if (heldItem != null && this.itemIsSafe(heldItem)) {
-                String parentNode = this.returnParentNode(shooter);
+            if (heldItem != null && ItemUtils.itemIsSafe(heldItem)) {
+                String parentNode = ItemUtils.returnParentNode(shooter);
                 if (parentNode == null) {
                     return;
                 }
 
-                if (this.getBoolean(parentNode + ".Abilities.No_Fall_Damage")) {
+                if (ConfigCache.getBoolean(parentNode + ".Abilities.No_Fall_Damage")) {
                     event.setCancelled(true);
                 }
             }
@@ -4544,13 +3361,13 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
         } else {
             ItemStack item = event.getItem().getItemStack();
-            if (this.itemIsSafe(item)) {
+            if (ItemUtils.itemIsSafe(item)) {
                 String fullName = item.getItemMeta().getDisplayName();
                 if (fullName.contains("૮")) {
                     event.setCancelled(true);
                     event.getItem().remove();
                 } else {
-                    String itemName = this.getPureName(fullName);
+                    String itemName = NameUtils.getPureName(fullName);
                     if (this.boobs.containsKey(itemName)) {
                         String parentNode = this.boobs.get(itemName);
                         if (!this.csminion.getBoobean(2, parentNode)) {
@@ -4602,8 +3419,8 @@ public class CSDirector extends JavaPlugin implements Listener {
         } else if (ent instanceof Villager || ent instanceof Horse) {
             Player player = event.getPlayer();
             ItemStack heldItem = player.getItemInHand();
-            String parentNode = this.returnParentNode(player);
-            if (parentNode != null && this.getBoolean(parentNode + ".Shooting.Cancel_Right_Click_Interactions")) {
+            String parentNode = ItemUtils.returnParentNode(player);
+            if (parentNode != null && ConfigCache.getBoolean(parentNode + ".Shooting.Cancel_Right_Click_Interactions")) {
                 this.OnPlayerInteract(new PlayerInteractEvent(player, Action.RIGHT_CLICK_AIR, heldItem, (Block) null, (BlockFace) null));
                 event.setCancelled(true);
             }
@@ -4618,8 +3435,8 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
 
         ItemStack item = event.getEntity().getItemStack();
-        if (this.itemIsSafe(item)) {
-            String itemName = this.getPureName(item.getItemMeta().getDisplayName());
+        if (ItemUtils.itemIsSafe(item)) {
+            String itemName = NameUtils.getPureName(item.getItemMeta().getDisplayName());
             if (itemName.contains("૮૮")) {
                 event.setCancelled(true);
             } else if (this.boobs.containsKey(itemName)) {
@@ -4705,42 +3522,9 @@ public class CSDirector extends JavaPlugin implements Listener {
     }
 
     // Устанавливает мину/взрывное устройство в мир и навешивает на него служебные метаданные.
-//    public void deployMine(Player player, String parentNode, Location loc) {
-//        String nodeInfo = this.getString(parentNode + ".Explosive_Devices.Device_Info");
-//        String[] deviceInfo = nodeInfo == null ? null : nodeInfo.split(",");
-//        ItemStack fuseItem = this.csminion.parseItemStack(deviceInfo[0]);
-//        Location spawnLoc = loc == null ? player.getLocation().add(0.0F, 0.75F, 0.0F) : loc;
-//        if (fuseItem == null) {
-//            player.sendMessage(this.heading + "No valid item-ID for 'Device_Info' of the weapon '" + parentNode + "' has been provided.");
-//        } else {
-//            EntityType cartType = EntityType.MINECART;
-//            if (deviceInfo.length == 2) {
-//                try {
-//                    cartType = EntityType.valueOf(deviceInfo[1].toUpperCase());
-//                } catch (IllegalArgumentException var13) {
-//                    player.sendMessage(this.heading + "The 'Device_Info' node of the weapon '" + parentNode + "' contains '" + deviceInfo[1] + "', which is not a valid minecart type.");
-//                }
-//            }
-//
-//            Entity mine = player.getWorld().spawnEntity(spawnLoc, cartType);
-//            ItemMeta metaPsngr = fuseItem.getItemMeta();
-//            metaPsngr.setDisplayName("§cS3AGULLL~" + player.getName() + "~" + parentNode + "~" + mine.getUniqueId().toString());
-//            fuseItem.setItemMeta(metaPsngr);
-//            Entity fusePassenger = player.getWorld().dropItem(spawnLoc, fuseItem);
-//            mine.setPassenger(fusePassenger);
-//            WeaponPlaceMineEvent event = new WeaponPlaceMineEvent(player, mine, parentNode);
-//            this.getServer().getPluginManager().callEvent(event);
-//        }
-//    }
-    public void deployMine(
-            Player player,
-            String parentNode,
-            Location location
-    ) {
+    public void deployMine(Player player, String parentNode, Location location) {
 
-        String deviceInfoString =
-                getString(parentNode +
-                        ".Explosive_Devices.Device_Info");
+        String deviceInfoString = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Info");
 
         if (deviceInfoString == null) {
             return;
@@ -4749,73 +3533,34 @@ public class CSDirector extends JavaPlugin implements Listener {
         MineDeviceInfo info;
 
         try {
-
             info = mineDeviceParser.parse(deviceInfoString);
-
         } catch (Exception ex) {
-
-            player.sendMessage(
-                    heading +
-                            "Invalid Device_Info for weapon '" +
-                            parentNode +
-                            "'"
-            );
-
+            player.sendMessage(heading + "Invalid Device_Info for weapon '" + parentNode + "'");
             return;
         }
 
         ItemStack fuseItem = info.getFuseItem();
 
         if (fuseItem == null) {
-
-            player.sendMessage(
-                    heading +
-                            "No valid item-ID for 'Device_Info' of weapon '" +
-                            parentNode +
-                            "'"
-            );
-
+            player.sendMessage(heading + "No valid item-ID for 'Device_Info' of weapon '" + parentNode + "'");
             return;
         }
 
-        Location spawnLocation =
-                location == null
-                        ? player.getLocation().add(0.0D, 0.75D, 0.0D)
-                        : location;
+        Location spawnLocation = location == null ? player.getLocation().add(0.0D, 0.75D, 0.0D) : location;
 
-        Entity mine =
-                player.getWorld().spawnEntity(
-                        spawnLocation,
-                        info.getMinecartType()
-                );
+        Entity mine = player.getWorld().spawnEntity(spawnLocation, info.getMinecartType());
 
         ItemMeta meta = fuseItem.getItemMeta();
 
-        meta.setDisplayName(
-                "§cS3AGULLL~"
-                        + player.getName()
-                        + "~"
-                        + parentNode
-                        + "~"
-                        + mine.getUniqueId()
-        );
+        meta.setDisplayName("§cS3AGULLL~" + player.getName() + "~" + parentNode + "~" + mine.getUniqueId());
 
         fuseItem.setItemMeta(meta);
 
-        Entity fusePassenger =
-                player.getWorld().dropItem(
-                        spawnLocation,
-                        fuseItem
-                );
+        Entity fusePassenger = player.getWorld().dropItem(spawnLocation, fuseItem);
 
         mine.setPassenger(fusePassenger);
 
-        WeaponPlaceMineEvent event =
-                new WeaponPlaceMineEvent(
-                        player,
-                        mine,
-                        parentNode
-                );
+        WeaponPlaceMineEvent event = new WeaponPlaceMineEvent(player, mine, parentNode);
 
         Bukkit.getPluginManager().callEvent(event);
     }
@@ -4843,16 +3588,16 @@ public class CSDirector extends JavaPlugin implements Listener {
     public void onC4Place(BlockPlaceEvent event) {
         final Player placer = event.getPlayer();
         if (event.getItemInHand() != null) {
-            final String[] parent_node = this.itemParentNode(event.getItemInHand(), placer);
+            final String[] parent_node = ItemUtils.itemParentNode(event.getItemInHand(), placer);
             if (parent_node != null) {
-                if (this.regionAndPermCheck(placer, parent_node[0], false) && this.getBoolean(parent_node[0] + ".Explosive_Devices.Enable")) {
+                if (this.regionAndPermCheck(placer, parent_node[0], false) && ConfigCache.getBoolean(parent_node[0] + ".Explosive_Devices.Enable")) {
                     placer.updateInventory();
-                    String type = this.getString(parent_node[0] + ".Explosive_Devices.Device_Type");
+                    String type = ConfigCache.getString(parent_node[0] + ".Explosive_Devices.Device_Type");
                     if (type != null && type.equalsIgnoreCase("remote")) {
-                        if (this.itemIsSafe(event.getItemInHand()) && event.getItemInHand().getItemMeta().getDisplayName().contains("«0»")) {
+                        if (ItemUtils.itemIsSafe(event.getItemInHand()) && event.getItemInHand().getItemMeta().getDisplayName().contains("«0»")) {
                             event.setCancelled(true);
                         } else {
-                            boolean placeAnywhere = this.getBoolean(parent_node[0] + ".Explosive_Devices.Remote_Bypass_Regions");
+                            boolean placeAnywhere = ConfigCache.getBoolean(parent_node[0] + ".Explosive_Devices.Remote_Bypass_Regions");
                             boolean allowed = !event.isCancelled() && event.canBuild();
                             final Block block = event.getBlockPlaced();
                             event.setCancelled(true);
@@ -4919,7 +3664,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                 skull.setOwner(uniqueID + "،" + storedOwner);
                 if (MaterialManager.pre113) {
-                    skull.setRotation(this.getBlockDirection(placer.getLocation().getYaw()));
+                    skull.setRotation(MathUtils.getBlockDirection(placer.getLocation().getYaw()));
                 }
 
                 skull.update(true);
@@ -4935,9 +3680,9 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                 placedHeads.put(world + "," + x + "," + y + "," + z, uniqueID);
                 ItemStack detonator = placer.getItemInHand();
-                boolean ammoEnable = this.getBoolean(parent_node[0] + ".Ammo.Enable");
-                String ammoInfo = this.getString(parent_node[0] + ".Ammo.Ammo_Item_ID");
-                boolean takeAmmo = this.getBoolean(parent_node[0] + ".Ammo.Take_Ammo_Per_Shot");
+                boolean ammoEnable = ConfigCache.getBoolean(parent_node[0] + ".Ammo.Enable");
+                String ammoInfo = ConfigCache.getString(parent_node[0] + ".Ammo.Ammo_Item_ID");
+                boolean takeAmmo = ConfigCache.getBoolean(parent_node[0] + ".Ammo.Take_Ammo_Per_Shot");
                 String bracketInfo = this.csminion.extractReading(detonator.getItemMeta().getDisplayName());
                 int detectedAmmo = 0;
 
@@ -4954,7 +3699,7 @@ public class CSDirector extends JavaPlugin implements Listener {
 
                 if (ammoEnable && takeAmmo) {
                     if (!this.csminion.containsItemStack(placer, ammoInfo, 1, parent_node[0])) {
-                        this.playSoundEffects(placer, parent_node[0], ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
+                        SoundUtils.playSoundEffects(placer, parent_node[0], ".Ammo.Sounds_Shoot_With_No_Ammo", false, (Location) null);
                         block.setType(Material.AIR);
                         return;
                     }
@@ -4983,7 +3728,7 @@ public class CSDirector extends JavaPlugin implements Listener {
                     detmeta.setLore(lore);
                     detonator.setItemMeta(detmeta);
                     placer.getInventory().setItemInHand(detonator);
-                    this.playSoundEffects(placer, parent_node[0], ".Explosive_Devices.Sounds_Deploy", false, (Location) null);
+                    SoundUtils.playSoundEffects(placer, parent_node[0], ".Explosive_Devices.Sounds_Deploy", false, (Location) null);
                 }
             }
 
@@ -5024,12 +3769,12 @@ public class CSDirector extends JavaPlugin implements Listener {
                     for (String exploDevID : this.rdelist.keySet()) {
                         if (exploDevID.equals(refinedOwner[0])) {
                             String parent_node = (String) this.rdelist.get(exploDevID);
-                            boolean bypassRegions = this.getBoolean(parent_node + ".Explosive_Devices.Remote_Bypass_Regions");
+                            boolean bypassRegions = ConfigCache.getBoolean(parent_node + ".Explosive_Devices.Remote_Bypass_Regions");
                             if (!event.isCancelled() || bypassRegions) {
                                 if (breaker != placer) {
                                     this.csminion.callAndResponse(breaker, placer, (Vehicle) null, itemInfo, false);
                                 } else {
-                                    String msg = this.getString(parent_node + ".Explosive_Devices.Message_Disarm");
+                                    String msg = ConfigCache.getString(parent_node + ".Explosive_Devices.Message_Disarm");
                                     if (msg != null) {
                                         breaker.sendMessage(msg);
                                     }
@@ -5069,56 +3814,10 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     }
 
-    // Сдвигает точку вылета снаряда влево/вправо для dual wield и более естественной стрельбы.
-    public Vector determinePosition(Player player, boolean dualWield, boolean leftClick) {
-        int leftOrRight = 90;
-        if (dualWield && leftClick) {
-            leftOrRight = -90;
-        }
 
-        double playerYaw = (double) (player.getLocation().getYaw() + 90.0F + (float) leftOrRight) * Math.PI / (double) 180.0F;
-        double x = Math.cos(playerYaw);
-        double y = Math.sin(playerYaw);
-        return new Vector(x, 0.0F, y);
-    }
 
-    public boolean itemIsSafe(ItemStack item) {
-        return item.hasItemMeta() && item.getItemMeta().getDisplayName() != null;
-    }
 
-    public float findNormal(float yaw) {
-        while (yaw <= -180.0F) {
-            yaw += 360.0F;
-        }
 
-        while (yaw > 180.0F) {
-            yaw -= 360.0F;
-        }
-
-        return yaw;
-    }
-
-    public BlockFace getBlockDirection(float yaw) {
-        yaw = this.findNormal(yaw);
-        switch ((int) yaw) {
-            case 0:
-                return BlockFace.NORTH;
-            case 90:
-                return BlockFace.EAST;
-            case 180:
-                return BlockFace.SOUTH;
-            case 270:
-                return BlockFace.WEST;
-            default:
-                if (yaw >= -45.0F && yaw < 45.0F) {
-                    return BlockFace.NORTH;
-                } else if (yaw >= 45.0F && yaw < 135.0F) {
-                    return BlockFace.EAST;
-                } else {
-                    return yaw >= -135.0F && yaw < -45.0F ? BlockFace.WEST : BlockFace.SOUTH;
-                }
-        }
-    }
 
     @EventHandler
     // Ловушки на сундуках и диспенсерах.
@@ -5143,8 +3842,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                     ItemStack[] contents = chest.getContents();
 
                     for (ItemStack susItem : contents) {
-                        if (susItem != null && this.itemIsSafe(susItem)) {
-                            String weaponTitle = this.getPureName(susItem.getItemMeta().getDisplayName());
+                        if (susItem != null && ItemUtils.itemIsSafe(susItem)) {
+                            String weaponTitle = NameUtils.getPureName(susItem.getItemMeta().getDisplayName());
                             if (this.boobs.containsKey(weaponTitle)) {
                                 String parentNode = this.boobs.get(weaponTitle);
                                 if (!this.csminion.getBoobean(1, parentNode)) {
@@ -5199,8 +3898,8 @@ public class CSDirector extends JavaPlugin implements Listener {
     public void activateTrapCard(Player opener, Player planter, Block block, String parent_node, Inventory chest, ItemStack[] content, String planterName, Item picked) {
         boolean unlimited = this.csminion.getBoobean(4, parent_node);
         if (planter != null) {
-            this.sendPlayerMessage(planter, parent_node, ".Explosive_Devices.Message_Trigger_Placer", planterName, opener.getName(), "<flight>", "<damage>");
-            this.playSoundEffects(planter, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null);
+            CommandUtils.sendPlayerMessage(planter, parent_node, ".Explosive_Devices.Message_Trigger_Placer", planterName, opener.getName(), "<flight>", "<damage>");
+            SoundUtils.playSoundEffects(planter, parent_node, ".Explosive_Devices.Sounds_Alert_Placer", false, (Location) null);
         }
 
         if (picked == null) {
@@ -5216,14 +3915,14 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
         }
 
-        this.sendPlayerMessage(opener, parent_node, ".Explosive_Devices.Message_Trigger_Victim", planterName, opener.getName(), "<flight>", "<damage>");
-        this.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, block.getLocation().add((double) 0.5F, (double) 0.5F, (double) 0.5F));
+        CommandUtils.sendPlayerMessage(opener, parent_node, ".Explosive_Devices.Message_Trigger_Victim", planterName, opener.getName(), "<flight>", "<damage>");
+        SoundUtils.playSoundEffects(null, parent_node, ".Explosive_Devices.Sounds_Trigger", false, block.getLocation().add((double) 0.5F, (double) 0.5F, (double) 0.5F));
     }
 
     @EventHandler
     public void onHopperGulp(InventoryPickupItemEvent event) {
         ItemStack item = event.getItem().getItemStack();
-        if (this.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("૮")) {
+        if (ItemUtils.itemIsSafe(item) && item.getItemMeta().getDisplayName().contains("૮")) {
             event.getItem().remove();
             event.setCancelled(true);
         }
@@ -5268,8 +3967,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                 attachment.setPermission("nocheatplus", true);
                 attachment.setPermission("anticheat.check.exempt", true);
                 String parentNode = splashPot.getMetadata("projParentNode").get(0).asString();
-                boolean enableExplode = this.getBoolean(parentNode + ".Explosions.Enable");
-                boolean impactExplode = this.getBoolean(parentNode + ".Explosions.On_Impact_With_Anything");
+                boolean enableExplode = ConfigCache.getBoolean(parentNode + ".Explosions.Enable");
+                boolean impactExplode = ConfigCache.getBoolean(parentNode + ".Explosions.On_Impact_With_Anything");
                 if (enableExplode && impactExplode) {
                     this.projectileExplosion(null, parentNode, false, (Player) shooter, false, true, (Location) null, splashPot.getLocation().getBlock(), true, 0);
                 }
@@ -5294,21 +3993,21 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     public boolean validHotbar(Player shooter, String parent_node) {
         boolean retVal = true;
-        String invCtrl = this.getString(parent_node + ".Item_Information.Inventory_Control");
+        String invCtrl = ConfigCache.getString(parent_node + ".Item_Information.Inventory_Control");
         if (invCtrl != null) {
             Inventory playerInv = shooter.getInventory();
             String[] groupList = invCtrl.replaceAll(" ", "").split(",");
 
             for (String invGroup : groupList) {
-                int groupLimit = this.getInt(invGroup + ".Limit");
+                int groupLimit = ConfigCache.getInt(invGroup + ".Limit");
                 int groupCount = 0;
 
                 for (int i = 0; i < 9; ++i) {
                     ItemStack checkItem = playerInv.getItem(i);
-                    if (checkItem != null && this.itemIsSafe(checkItem)) {
-                        String[] checkParent = this.itemParentNode(checkItem, shooter);
+                    if (checkItem != null && ItemUtils.itemIsSafe(checkItem)) {
+                        String[] checkParent = ItemUtils.itemParentNode(checkItem, shooter);
                         if (checkParent != null) {
-                            String groupCheck = this.getString(checkParent[0] + ".Item_Information.Inventory_Control");
+                            String groupCheck = ConfigCache.getString(checkParent[0] + ".Item_Information.Inventory_Control");
                             if (groupCheck != null && groupCheck.contains(invGroup)) {
                                 ++groupCount;
                             }
@@ -5317,8 +4016,8 @@ public class CSDirector extends JavaPlugin implements Listener {
                 }
 
                 if (groupCount > groupLimit) {
-                    this.sendPlayerMessage(shooter, invGroup, ".Message_Exceeded", "<shooter>", "<victim>", "<flight>", "<damage>");
-                    this.playSoundEffects(shooter, invGroup, ".Sounds_Exceeded", false, null);
+                    CommandUtils.sendPlayerMessage(shooter, invGroup, ".Message_Exceeded", "<shooter>", "<victim>", "<flight>", "<damage>");
+                    SoundUtils.playSoundEffects(shooter, invGroup, ".Sounds_Exceeded", false, null);
                     retVal = false;
                 }
             }
@@ -5328,126 +4027,28 @@ public class CSDirector extends JavaPlugin implements Listener {
     }
 
     // Определяет, нужно ли вместо перезарядки/выстрела выбросить itembomb или другое устройство.
-//    public boolean tossBomb(Player player, String parentNode, ItemStack heldItem, boolean rdeEnable) {
-//        boolean retVal = false;
-//        String type = this.getString(parentNode + ".Explosive_Devices.Device_Type");
-//        if (rdeEnable && type != null && type.equalsIgnoreCase("itembomb")) {
-//            int gunSlot = player.getInventory().getHeldItemSlot();
-//            String metaTag = parentNode + "shootDelay" + gunSlot;
-//            if (player.hasMetadata(metaTag)) {
-//                return false;
-//            }
-//
-//            player.setMetadata(metaTag, new FixedMetadataValue(this, true));
-//            this.csminion.tempVars(player, metaTag, (long) this.getInt(parentNode + ".Shooting.Delay_Between_Shots"));
-//            String preInfo = this.getString(parentNode + ".Explosive_Devices.Device_Info");
-//            String[] deviceInfo = preInfo == null ? null : preInfo.split(",");
-//            if (this.csminion.bombIsInvalid(player, deviceInfo, parentNode)) {
-//                return true;
-//            }
-//
-//            double speed = Double.parseDouble(deviceInfo[1]) * 0.1;
-//            ItemStack bombType = this.csminion.parseItemStack(deviceInfo[2]);
-//            boolean ammoEnable = this.getBoolean(parentNode + ".Ammo.Enable");
-//            String ammoInfo = this.getString(parentNode + ".Ammo.Ammo_Item_ID");
-//            boolean takeAmmo = this.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
-//            int detectedAmmo = 0;
-//            String bracketInfo = this.csminion.extractReading(heldItem.getItemMeta().getDisplayName());
-//
-//            try {
-//                detectedAmmo = Integer.parseInt(bracketInfo);
-//            } catch (NumberFormatException var24) {
-//            }
-//
-//            if (detectedAmmo <= 0) {
-//                return true;
-//            }
-//
-//            if (ammoEnable && takeAmmo) {
-//                if (!this.csminion.containsItemStack(player, ammoInfo, 1, parentNode)) {
-//                    this.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, null);
-//                    return true;
-//                }
-//
-//                this.csminion.replaceBrackets(heldItem, String.valueOf(detectedAmmo - 1), parentNode);
-//                this.csminion.removeNamedItem(player, ammoInfo, 1, parentNode, false);
-//            } else {
-//                this.csminion.replaceBrackets(heldItem, String.valueOf(detectedAmmo - 1), parentNode);
-//            }
-//
-//            Item itemBomb = player.getWorld().dropItem(player.getEyeLocation(), bombType);
-//            itemBomb.setVelocity(player.getEyeLocation().getDirection().multiply(speed));
-//            itemBomb.setPickupDelay(24000);
-//            this.playSoundEffects(player, parentNode, ".Explosive_Devices.Sounds_Deploy", false, null);
-//            String playerName = player.getName();
-//            Map<String, ArrayDeque<Item>> subList = this.itembombs.get(playerName);
-//            if (subList == null) {
-//                subList = new HashMap<>();
-//                this.itembombs.put(playerName, subList);
-//            }
-//
-//            ArrayDeque<Item> subSubList = subList.get(parentNode);
-//            if (subSubList == null) {
-//                subSubList = new ArrayDeque<>();
-//                subList.put(parentNode, subSubList);
-//            }
-//
-//            subSubList.add(itemBomb);
-//            if (subSubList.size() > Integer.parseInt(deviceInfo[0])) {
-//                subSubList.removeFirst().remove();
-//            }
-//
-//            ItemStack grenStack = itemBomb.getItemStack();
-//            this.csminion.setItemName(grenStack, playerName + "૮૮" + itemBomb.getUniqueId());
-//            itemBomb.setItemStack(grenStack);
-//            this.callShootEvent(player, itemBomb, parentNode);
-//            retVal = true;
-//        }
-//
-//        return retVal;
-//    }
-    public boolean tossBomb(
-            Player player,
-            String parentNode,
-            ItemStack heldItem,
-            boolean rdeEnable
-    ) {
+    public boolean tossBomb(Player player, String parentNode, ItemStack heldItem, boolean rdeEnable) {
 
-        String type =
-                getString(parentNode +
-                        ".Explosive_Devices.Device_Type");
+        String type = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Type");
 
-        if (!rdeEnable
-                || type == null
-                || !type.equalsIgnoreCase("itembomb")) {
+        if (!rdeEnable || type == null || !type.equalsIgnoreCase("itembomb")) {
 
             return false;
         }
 
-        int gunSlot =
-                player.getInventory().getHeldItemSlot();
+        int gunSlot = player.getInventory().getHeldItemSlot();
 
-        String metaTag =
-                parentNode + "shootDelay" + gunSlot;
+        String metaTag = parentNode + "shootDelay" + gunSlot;
 
         if (player.hasMetadata(metaTag)) {
             return false;
         }
 
-        player.setMetadata(
-                metaTag,
-                new FixedMetadataValue(this, true)
-        );
+        player.setMetadata(metaTag, new FixedMetadataValue(this, true));
 
-        csminion.tempVars(
-                player,
-                metaTag,
-                (long) getInt(parentNode + ".Shooting.Delay_Between_Shots")
-        );
+        csminion.tempVars(player, metaTag, (long) ConfigCache.getInt(parentNode + ".Shooting.Delay_Between_Shots"));
 
-        String deviceInfoString =
-                getString(parentNode +
-                        ".Explosive_Devices.Device_Info");
+        String deviceInfoString = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Info");
 
         if (deviceInfoString == null) {
             return false;
@@ -5456,47 +4057,24 @@ public class CSDirector extends JavaPlugin implements Listener {
         ItemBombDeviceInfo info;
 
         try {
-
-            info = itemBombDeviceParser.parse(
-                    deviceInfoString
-            );
-
+            info = itemBombDeviceParser.parse(deviceInfoString);
         } catch (Exception ex) {
-
-            printM(
-                    "Invalid Device_Info in weapon '"
-                            + parentNode
-                            + "'"
-            );
-
+            printM("Invalid Device_Info in weapon '" + parentNode + "'");
             return false;
         }
 
-        boolean ammoEnable =
-                getBoolean(parentNode +
-                        ".Ammo.Enable");
+        boolean ammoEnable = ConfigCache.getBoolean(parentNode + ".Ammo.Enable");
 
-        boolean takeAmmo =
-                getBoolean(parentNode +
-                        ".Ammo.Take_Ammo_Per_Shot");
+        boolean takeAmmo = ConfigCache.getBoolean(parentNode + ".Ammo.Take_Ammo_Per_Shot");
 
-        String ammoInfo =
-                getString(parentNode +
-                        ".Ammo.Ammo_Item_ID");
+        String ammoInfo = ConfigCache.getString(parentNode + ".Ammo.Ammo_Item_ID");
 
         int detectedAmmo = 0;
 
-        String bracketInfo =
-                csminion.extractReading(
-                        heldItem.getItemMeta()
-                                .getDisplayName()
-                );
+        String bracketInfo = csminion.extractReading(heldItem.getItemMeta().getDisplayName());
 
         try {
-
-            detectedAmmo =
-                    Integer.parseInt(bracketInfo);
-
+            detectedAmmo = Integer.parseInt(bracketInfo);
         } catch (NumberFormatException ignored) {
         }
 
@@ -5506,83 +4084,32 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         if (ammoEnable && takeAmmo) {
 
-            if (!csminion.containsItemStack(
-                    player,
-                    ammoInfo,
-                    1,
-                    parentNode
-            )) {
-
-                playSoundEffects(
-                        player,
-                        parentNode,
-                        ".Ammo.Sounds_Shoot_With_No_Ammo",
-                        false,
-                        null
-                );
-
+            if (!csminion.containsItemStack(player, ammoInfo, 1, parentNode)) {
+                SoundUtils.playSoundEffects(player, parentNode, ".Ammo.Sounds_Shoot_With_No_Ammo", false, null);
                 return true;
             }
 
-            csminion.replaceBrackets(
-                    heldItem,
-                    String.valueOf(detectedAmmo - 1),
-                    parentNode
-            );
+            csminion.replaceBrackets(heldItem, String.valueOf(detectedAmmo - 1), parentNode);
 
-            csminion.removeNamedItem(
-                    player,
-                    ammoInfo,
-                    1,
-                    parentNode,
-                    false
-            );
+            csminion.removeNamedItem(player, ammoInfo, 1, parentNode, false);
 
         } else {
-
-            csminion.replaceBrackets(
-                    heldItem,
-                    String.valueOf(detectedAmmo - 1),
-                    parentNode
-            );
+            csminion.replaceBrackets(heldItem, String.valueOf(detectedAmmo - 1), parentNode);
         }
 
-        Item itemBomb =
-                player.getWorld().dropItem(
-                        player.getEyeLocation(),
-                        info.getBombItem()
-                );
+        Item itemBomb = player.getWorld().dropItem(player.getEyeLocation(), info.getBombItem());
 
-        itemBomb.setVelocity(
-                player.getEyeLocation()
-                        .getDirection()
-                        .multiply(info.getSpeed())
-        );
+        itemBomb.setVelocity(player.getEyeLocation().getDirection().multiply(info.getSpeed()));
 
         itemBomb.setPickupDelay(24000);
 
-        playSoundEffects(
-                player,
-                parentNode,
-                ".Explosive_Devices.Sounds_Deploy",
-                false,
-                null
-        );
+        SoundUtils.playSoundEffects(player, parentNode, ".Explosive_Devices.Sounds_Deploy", false, null);
 
-        String playerName =
-                player.getName();
+        String playerName = player.getName();
 
-        Map<String, ArrayDeque<Item>> playerBombs =
-                itembombs.computeIfAbsent(
-                        playerName,
-                        k -> new HashMap<>()
-                );
+        Map<String, ArrayDeque<Item>> playerBombs = itembombs.computeIfAbsent(playerName, k -> new HashMap<>());
 
-        ArrayDeque<Item> bombs =
-                playerBombs.computeIfAbsent(
-                        parentNode,
-                        k -> new ArrayDeque<>()
-                );
+        ArrayDeque<Item> bombs = playerBombs.computeIfAbsent(parentNode, k -> new ArrayDeque<>());
 
         bombs.add(itemBomb);
 
@@ -5595,112 +4122,19 @@ public class CSDirector extends JavaPlugin implements Listener {
             }
         }
 
-        ItemStack bombStack =
-                itemBomb.getItemStack();
+        ItemStack bombStack = itemBomb.getItemStack();
 
-        csminion.setItemName(
-                bombStack,
-                playerName + "૮૮" + itemBomb.getUniqueId()
-        );
+        csminion.setItemName(bombStack, playerName + "૮૮" + itemBomb.getUniqueId());
 
         itemBomb.setItemStack(bombStack);
 
-        callShootEvent(
-                player,
-                itemBomb,
-                parentNode
-        );
+        ProjectileUtils.callShootEvent(player, itemBomb, parentNode);
 
         return true;
     }
 
     // Детонация C4 и itembomb по команде игрока.
-//    public void detonateC4(Player shooter, ItemStack item, String parentNode, String deviceType) {
-//        List<String> lore = null;
-//        String[] deviceInfo = null;
-//        String playerName = shooter.getName();
-//        boolean rdeFound = false;
-//        boolean itemMode = false;
-//        boolean noneToBoom = true;
-//        if (deviceType.equalsIgnoreCase("itembomb")) {
-//            String itemName = item.getItemMeta().getDisplayName();
-//            String preInfo = this.getString(parentNode + ".Explosive_Devices.Device_Info");
-//            deviceInfo = preInfo == null ? null : preInfo.split(",");
-//            if (this.csminion.bombIsInvalid(shooter, deviceInfo, parentNode) || itemName.contains("«" + deviceInfo[0] + "»")) {
-//                return;
-//            }
-//
-//            rdeFound = true;
-//            itemMode = true;
-//            if (this.itembombs.containsKey(playerName)) {
-//                int delay = this.getInt(parentNode + ".Explosions.Explosion_Delay");
-//                ItemStack detItem = this.csminion.parseItemStack(deviceInfo[3]);
-//                ArrayDeque<Item> subSubList = this.itembombs.get(playerName).get(parentNode);
-//                if (subSubList != null) {
-//                    while (!subSubList.isEmpty()) {
-//                        noneToBoom = false;
-//                        Item bomb = subSubList.removeFirst();
-//                        this.playSoundEffects(bomb, parentNode, ".Explosive_Devices.Sounds_Trigger", false, null);
-//                        this.projectileExplosion(bomb, parentNode, false, shooter, false, false, null, null, false, 0);
-//                        detItem.setItemMeta(bomb.getItemStack().getItemMeta());
-//                        bomb.setItemStack(detItem);
-//                        this.prepareTermination(bomb, true, (long) delay);
-//                    }
-//
-//                    this.itembombs.get(playerName).remove(parentNode);
-//                }
-//            }
-//        } else if (item.getItemMeta().hasLore()) {
-//            lore = item.getItemMeta().getLore();
-//            Iterator<String> it = lore.iterator();
-//
-//            while (it.hasNext()) {
-//                String line = it.next();
-//                if (line.contains(String.valueOf('᎐'))) {
-//                    line = line.replace(" ", "");
-//                    line = line.replace("]§r§e", "]§e");
-//                    String[] itemInfo = line.split("]§e|\\᎐|,");
-//                    this.csminion.detonateRDE(shooter, null, itemInfo, true);
-//                    it.remove();
-//                    rdeFound = true;
-//                }
-//            }
-//        }
-//
-//        if (rdeFound) {
-//            String capacity = "0";
-//            String[] refinedOre = itemMode ? deviceInfo : this.csminion.returnRefinedOre(shooter, parentNode);
-//            if (refinedOre != null) {
-//                capacity = refinedOre[0];
-//            }
-//
-//            if (!itemMode || !noneToBoom) {
-//                this.playSoundEffects(shooter, parentNode, ".Explosive_Devices.Sounds_Alert_Placer", false, null);
-//            }
-//
-//            if (!this.getBoolean(parentNode + ".Extras.One_Time_Use")) {
-//                this.csminion.replaceBrackets(item, capacity, parentNode);
-//            } else if (item.getItemMeta().getDisplayName() != null && item.getItemMeta().getDisplayName().contains("«0»")) {
-//                shooter.getInventory().setItemInHand(null);
-//                shooter.updateInventory();
-//                return;
-//            }
-//
-//            if (!itemMode) {
-//                ItemMeta detmeta = item.getItemMeta();
-//                detmeta.setLore(lore);
-//                item.setItemMeta(detmeta);
-//                shooter.getInventory().setItemInHand(item);
-//            }
-//        }
-//
-//    }
-    public void detonateC4(
-            Player shooter,
-            ItemStack item,
-            String parentNode,
-            String deviceType
-    ) {
+    public void detonateC4(Player shooter, ItemStack item, String parentNode, String deviceType) {
 
         List<String> lore = null;
 
@@ -5714,106 +4148,49 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         if ("itembomb".equalsIgnoreCase(deviceType)) {
 
-            String itemName =
-                    item.getItemMeta().getDisplayName();
+            String itemName = item.getItemMeta().getDisplayName();
 
-            String deviceInfoString =
-                    getString(
-                            parentNode +
-                                    ".Explosive_Devices.Device_Info"
-                    );
+            String deviceInfoString = ConfigCache.getString(parentNode + ".Explosive_Devices.Device_Info");
 
             if (deviceInfoString == null) {
                 return;
             }
 
             try {
-
-                bombInfo =
-                        itemBombDeviceParser.parse(
-                                deviceInfoString
-                        );
-
+                bombInfo = itemBombDeviceParser.parse(deviceInfoString);
             } catch (Exception ex) {
-
-                printM(
-                        "Invalid Device_Info for weapon '"
-                                + parentNode
-                                + "'"
-                );
-
+                printM("Invalid Device_Info for weapon '" + parentNode + "'");
                 return;
             }
 
-            if (itemName.contains(
-                    "«" + bombInfo.getMaxBombs() + "»"
-            )) {
+            if (itemName.contains("«" + bombInfo.getMaxBombs() + "»")) {
                 return;
             }
 
             rdeFound = true;
             itemMode = true;
 
-            Map<String, ArrayDeque<Item>> playerBombs =
-                    itembombs.get(playerName);
+            Map<String, ArrayDeque<Item>> playerBombs = itembombs.get(playerName);
 
             if (playerBombs != null) {
 
-                int delay =
-                        getInt(
-                                parentNode +
-                                        ".Explosions.Explosion_Delay"
-                        );
+                int delay = ConfigCache.getInt(parentNode + ".Explosions.Explosion_Delay");
 
-                ArrayDeque<Item> bombs =
-                        playerBombs.get(parentNode);
+                ArrayDeque<Item> bombs = playerBombs.get(parentNode);
 
                 if (bombs != null) {
 
                     while (!bombs.isEmpty()) {
 
                         noneToBoom = false;
+                        Item bomb = bombs.removeFirst();
+                        SoundUtils.playSoundEffects(bomb, parentNode, ".Explosive_Devices.Sounds_Trigger", false, null);
+                        projectileExplosion(bomb, parentNode, false, shooter, false, false, null, null, false, 0);
 
-                        Item bomb =
-                                bombs.removeFirst();
-
-                        playSoundEffects(
-                                bomb,
-                                parentNode,
-                                ".Explosive_Devices.Sounds_Trigger",
-                                false,
-                                null
-                        );
-
-                        projectileExplosion(
-                                bomb,
-                                parentNode,
-                                false,
-                                shooter,
-                                false,
-                                false,
-                                null,
-                                null,
-                                false,
-                                0
-                        );
-
-                        ItemStack detItem =
-                                bombInfo.getDetonatorItem()
-                                        .clone();
-
-                        detItem.setItemMeta(
-                                bomb.getItemStack()
-                                        .getItemMeta()
-                        );
-
+                        ItemStack detItem = bombInfo.getDetonatorItem().clone();
+                        detItem.setItemMeta(bomb.getItemStack().getItemMeta());
                         bomb.setItemStack(detItem);
-
-                        prepareTermination(
-                                bomb,
-                                true,
-                                (long) delay
-                        );
+                        ProjectileUtils.prepareTermination(bomb,true, (long) delay);
                     }
 
                     playerBombs.remove(parentNode);
@@ -5824,34 +4201,22 @@ public class CSDirector extends JavaPlugin implements Listener {
 
             lore = item.getItemMeta().getLore();
 
-            Iterator<String> iterator =
-                    lore.iterator();
+            Iterator<String> iterator = lore.iterator();
 
             while (iterator.hasNext()) {
 
                 String line = iterator.next();
 
-                if (!line.contains(
-                        String.valueOf('᎐')
-                )) {
+                if (!line.contains(String.valueOf('᎐'))) {
                     continue;
                 }
 
                 line = line.replace(" ", "");
                 line = line.replace("]§r§e", "]§e");
 
-                String[] itemInfo =
-                        line.split("]§e|\\᎐|,");
-
-                csminion.detonateRDE(
-                        shooter,
-                        null,
-                        itemInfo,
-                        true
-                );
-
+                String[] itemInfo = line.split("]§e|\\᎐|,");
+                csminion.detonateRDE(shooter, null, itemInfo, true);
                 iterator.remove();
-
                 rdeFound = true;
             }
         }
@@ -5864,18 +4229,11 @@ public class CSDirector extends JavaPlugin implements Listener {
 
         if (itemMode && bombInfo != null) {
 
-            capacity =
-                    String.valueOf(
-                            bombInfo.getMaxBombs()
-                    );
+            capacity = String.valueOf(bombInfo.getMaxBombs());
 
         } else {
 
-            String[] refinedOre =
-                    csminion.returnRefinedOre(
-                            shooter,
-                            parentNode
-                    );
+            String[] refinedOre = csminion.returnRefinedOre(shooter, parentNode);
 
             if (refinedOre != null) {
                 capacity = refinedOre[0];
@@ -5883,55 +4241,26 @@ public class CSDirector extends JavaPlugin implements Listener {
         }
 
         if (!itemMode || !noneToBoom) {
-
-            playSoundEffects(
-                    shooter,
-                    parentNode,
-                    ".Explosive_Devices.Sounds_Alert_Placer",
-                    false,
-                    null
-            );
+            SoundUtils.playSoundEffects(shooter, parentNode, ".Explosive_Devices.Sounds_Alert_Placer", false, null);
         }
 
-        if (!getBoolean(
-                parentNode +
-                        ".Extras.One_Time_Use"
-        )) {
+        if (!ConfigCache.getBoolean(parentNode + ".Extras.One_Time_Use")) {
 
-            csminion.replaceBrackets(
-                    item,
-                    capacity,
-                    parentNode
-            );
+            csminion.replaceBrackets(item, capacity, parentNode);
 
         } else if (
-                item.getItemMeta()
-                        .getDisplayName() != null
-                        &&
-                        item.getItemMeta()
-                                .getDisplayName()
-                                .contains("«0»")
+                item.getItemMeta().getDisplayName() != null
+                        && item.getItemMeta().getDisplayName().contains("«0»")
         ) {
-
-            shooter.getInventory()
-                    .setItemInHand(null);
-
+            shooter.getInventory().setItemInHand(null);
             shooter.updateInventory();
-
             return;
         }
-
         if (!itemMode) {
-
-            ItemMeta meta =
-                    item.getItemMeta();
-
+            ItemMeta meta = item.getItemMeta();
             meta.setLore(lore);
-
             item.setItemMeta(meta);
-
-            shooter.getInventory()
-                    .setItemInHand(item);
+            shooter.getInventory().setItemInHand(item);
         }
     }
 
@@ -5942,7 +4271,7 @@ public class CSDirector extends JavaPlugin implements Listener {
         boolean noArrow = isAttachment && !itemName.contains(String.valueOf('◀')) && !itemName.contains(String.valueOf('◁'));
         if (noBracket || noArrow) {
             Pattern pattern = Pattern.compile("-?\\d+");
-            int startingPos = !isAttachment && !isDual ? itemName.lastIndexOf(" ") : getLastChar(itemName, ' ', 3);
+            int startingPos = !isAttachment && !isDual ? itemName.lastIndexOf(" ") : StringUtils.getLastChar(itemName, ' ', 3);
             String[] bracketInfo = itemName.substring(startingPos + 1).split(" ");
             String[] ammo = new String[]{"", "", ""};
             if (!isAttachment && !isDual) {
@@ -5964,92 +4293,12 @@ public class CSDirector extends JavaPlugin implements Listener {
 
     }
 
-    public static int getLastChar(String str, char c, int n) {
-        int pos;
-        for (pos = str.lastIndexOf(c, str.length()); n-- > 1 && pos != -1; pos = str.lastIndexOf(c, pos - 1)) {
-        }
-
-        return pos;
-    }
-
     // Возвращает текущий боезапас/ёмкость через event, чтобы другие плагины могли вмешаться.
     public int getReloadAmount(Player player, String weaponTitle, ItemStack item) {
-        int capacity = this.getInt(weaponTitle + ".Reload.Reload_Amount");
+        int capacity = ConfigCache.getInt(weaponTitle + ".Reload.Reload_Amount");
         WeaponCapacityEvent event = new WeaponCapacityEvent(player, weaponTitle, item, capacity);
         this.getServer().getPluginManager().callEvent(event);
         return event.getCapacity();
     }
 
-    // Извлекает тип и название активного/подключённого attachment из display name оружия.
-    public String[] getAttachment(String weaponTitle, ItemStack item) {
-        String attachType = this.getString(weaponTitle + ".Item_Information.Attachments.Type");
-        if (attachType != null && !attachType.equalsIgnoreCase("accessory")) {
-            String attachment = this.getString(weaponTitle + ".Item_Information.Attachments.Info");
-            WeaponAttachmentEvent event = new WeaponAttachmentEvent(weaponTitle, item, attachment);
-            this.getServer().getPluginManager().callEvent(event);
-            return new String[]{event.isCancelled() ? null : attachType, event.getAttachment()};
-        } else {
-            return new String[]{attachType, null};
-        }
-    }
-
-    // Проверяет режим dual wield с учётом предмета в руке и конфига оружия.
-    public boolean isDualWield(Player player, String weaponTitle, ItemStack item) {
-        boolean dualWield = this.getBoolean(weaponTitle + ".Shooting.Dual_Wield");
-        WeaponDualWieldEvent event = new WeaponDualWieldEvent(player, weaponTitle, item, dualWield);
-        this.getServer().getPluginManager().callEvent(event);
-        return event.isDualWield();
-    }
-
-    public boolean isDifferentItem(ItemStack item, String weaponTitle) {
-        if (this.getBoolean(weaponTitle + ".Item_Information.Skip_Name_Check")) {
-            String itemWeaponTitle = this.isSkipNameItem(item);
-            return itemWeaponTitle == null || !itemWeaponTitle.equals(weaponTitle);
-        } else {
-            String itemName = this.getString(weaponTitle + ".Item_Information.Item_Name");
-            String heldItemName = this.toDisplayForm(item.getItemMeta().getDisplayName());
-            return !heldItemName.startsWith(itemName);
-        }
-    }
-
-    public boolean isAir(Material m) {
-        return m == Material.AIR || m.name().endsWith("_AIR");
-    }
-
-    public boolean isValid(int tick, int fireRate) {
-        return switch (fireRate) {
-            case 1 -> tick % 4 == 1;
-            case 2 -> {
-                tick %= 7;
-                yield tick == 1 || tick == 4;
-            }
-            case 3 -> tick % 3 == 1;
-            case 4 -> {
-                tick %= 5;
-                yield tick == 1 || tick == 3;
-            }
-            case 5 -> {
-                tick %= 7;
-                yield tick == 1 || tick == 3 || tick == 5;
-            }
-            case 6 -> tick % 2 == 1;
-            case 7 -> tick == 2 || tick % 2 == 1;
-            case 8 -> {
-                tick %= 5;
-                yield tick == 1 || tick == 2 || tick == 4;
-            }
-            case 9 -> {
-                tick %= 6;
-                yield tick != 2 && tick != 0;
-            }
-            case 10 -> tick % 3 != 0;
-            case 11 -> tick % 4 != 0;
-            case 12 -> tick % 5 != 0;
-            case 13 -> tick % 6 != 0;
-            case 14 -> tick % 10 != 0;
-            case 15 -> tick != 20;
-            case 16 -> true;
-            default -> true;
-        };
-    }
 }

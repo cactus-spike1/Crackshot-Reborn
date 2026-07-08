@@ -2,6 +2,8 @@ package com.shampaggon.crackshot.cmd;
 
 import com.shampaggon.crackshot.CSDirector;
 import com.shampaggon.crackshot.CSMessages;
+import fun.cactus.utils.config.ConfigCache;
+import fun.cactus.utils.ItemUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.defaults.BukkitCommand;
@@ -107,7 +109,7 @@ public class CrackshotCMD extends BukkitCommand {
                 plugin.csminion.getWeaponCommand(player, args[1], true, amount, false, false);
                 return true;
             } else if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
-                String parent_node = plugin.returnParentNode(player);
+                String parent_node = ItemUtils.returnParentNode(player);
                 if (parent_node == null) {
                     CSMessages.sendMessage(player, plugin.getHeading(), CSMessages.Message.CANNOT_RELOAD.getMessage());
                     return true;
@@ -169,7 +171,7 @@ public class CrackshotCMD extends BukkitCommand {
         // list <page/all>
         else if (args.length == 2 && args[0].equalsIgnoreCase("list")) {
             list.add("all");
-            int max = plugin.getInt("totalPages");
+            int max = ConfigCache.getInt("totalPages");
             for (int i = 1; i <= max; i++) {
                 list.add(String.valueOf(i));
             }

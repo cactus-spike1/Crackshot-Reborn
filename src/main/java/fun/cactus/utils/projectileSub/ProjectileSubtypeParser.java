@@ -1,11 +1,12 @@
 package fun.cactus.utils.projectileSub;
 
 import com.shampaggon.crackshot.CSDirector;
+import fun.cactus.utils.config.ConfigCache;
 import org.bukkit.inventory.ItemStack;
 
 public class ProjectileSubtypeParser {
 
-    public static ProjectileSubtypeData parseNumeric(String raw, String weapon) {
+    private static ProjectileSubtypeData parseNumeric(String raw, String weapon) {
 
         String[] parts = raw.split("-");
 
@@ -35,7 +36,7 @@ public class ProjectileSubtypeParser {
         }
     }
 
-    public static ProjectileSubtypeData parseItem(String raw, String weapon, CSDirector cs) {
+    private static ProjectileSubtypeData parseItem(String raw, String weapon, CSDirector cs) {
 
         ItemStack item = cs.csminion.parseItemStack(raw);
 
@@ -46,8 +47,25 @@ public class ProjectileSubtypeParser {
         return ProjectileSubtypeData.item(item);
     }
 
-    public static ProjectileSubtypeData parseBoolean(String raw) {
+    private static ProjectileSubtypeData parseBoolean(String raw) {
 
         return ProjectileSubtypeData.bool(Boolean.parseBoolean(raw));
+    }
+
+    public static ProjectileSubtypeData parseProjectileSubtype(String parentNode) {
+        String raw = ConfigCache.getString(parentNode + ".Shooting.Projectile_Subtype");
+        if (raw == null) {
+            return null;
+        }
+
+        if (raw.equalsIgnoreCase("true") || raw.equalsIgnoreCase("false")) {
+            return ProjectileSubtypeParser.parseBoolean(raw);
+        }
+
+        if (raw.contains("-")) {
+            return ProjectileSubtypeParser.parseNumeric(raw, parentNode);
+        }
+
+        return ProjectileSubtypeParser.parseItem(raw, parentNode, CSDirector.getInstance());
     }
 }

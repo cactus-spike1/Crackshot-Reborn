@@ -1,5 +1,8 @@
 package com.shampaggon.crackshot;
 
+import fun.cactus.utils.ItemUtils;
+import fun.cactus.utils.weapon.WeaponAttachmentUtils;
+import fun.cactus.utils.weapon.WeaponHelperUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.EntityType;
@@ -152,7 +155,7 @@ public class CSUtility {
     // Пытается определить название оружия по ItemStack.
     public String getWeaponTitle(ItemStack item) {
         if (item == null || this.classOne == null) return null;
-        String[] weaponInfo = this.classOne.itemParentNode(item, null);
+        String[] weaponInfo = ItemUtils.itemParentNode(item, null);
         if (weaponInfo == null || weaponInfo.length == 0) return null;
         return weaponInfo[0];
     }
@@ -206,7 +209,7 @@ public class CSUtility {
         String resolvedWeapon = this.resolveWeaponTitle(weaponTitle);
         if (resolvedWeapon == null) return null;
 
-        return this.classOne.getAttachment(resolvedWeapon, item);
+        return WeaponAttachmentUtils.getAttachment(resolvedWeapon, item);
     }
 
     // Проверяет, работает ли оружие в режиме dual wield для данного игрока и предмета.
@@ -216,7 +219,7 @@ public class CSUtility {
         String resolvedWeapon = this.resolveWeaponTitle(weaponTitle);
         if (resolvedWeapon == null) return false;
 
-        return this.classOne.isDualWield(player, resolvedWeapon, item);
+        return WeaponHelperUtils.isDualWield(player, resolvedWeapon, item);
     }
 
     // Принудительно запускает выстрел из оружия, которое игрок держит в руке.
